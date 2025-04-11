@@ -1,6 +1,7 @@
 ###########################################
 # Self Organizing Maps (SOM) implementation
-# for management priority landscapes
+# for management priority landscapes 
+# "archetypes" of aspen management (?)
 
 library(tidyverse)
 library(sf)
@@ -10,11 +11,15 @@ library(scales)
 library(ggspatial)
 library(gridExtra)
 library(ggradar)
+library(cluster)
+library(ggcorrplot)
+library(patchwork)
 
 projdir <- "/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim3/"
 
 # load and prep the firesheds data
-firesheds <- st_read(paste0(projdir,'data/spatial/mod/srm_firesheds_model_data.gpkg'))
+firesheds <- st_read(paste0(projdir,"data/spatial/mod/srm_firesheds_model_data_wBivar.gpkg")) %>%
+ mutate(bi_class = as.factor(bi_class))
 glimpse(firesheds)
 
 
@@ -31,27 +36,30 @@ X <- firesheds %>%
   pop_den = pop_density_max,
   pop_n = pop_count_sum,
   wui_dist = wui_dist_mean,
-  lf_canopy = forest_cc_mean
+  combust = combust_sum,
+  lf_canopy = forest_cc_mean,
+  lf_height = forest_ch_mean,
+  exposure = sfs_exposure,
+  disturbed = pct_disturbed,
+  burned_pct = burned_pct_c
  ) %>%
  mutate(
   # calculate contemporary aspen hectares
-  aspen10_ha = aspen10_pixn * 0.01,
+  aspen_ha = aspen10_pixn * 0.01,
   forest_ha = forest_pixels * 0.09,
   # percent of forested area that is aspen?
-  aspen_forest = aspen10_ha / forest_ha,
-  # combine the WUI classes (???)
+  aspen_forest = aspen_ha / forest_ha,
+  # combine the WUI classes
   wui = wui1 + wui2 + wui3 + wui4
  ) %>%
  # keep only the subset we want to use for SOM
  select(
   trend_count, delta585, # future future / future aspen
-  aspen_forest, aspen10_ha, n_patches, patch_den, big_patch, # contemporary aspen presence/patches
-  combust_sum, pop_den, pop_n, wui, wui_dist, # built environment metrics
-  burned_pct_c, # cumulative burned area percent of fireshed since 1984
-  whp_p90, hui_p90, cfl_p90, # wildfire risk to communities
-  forest_pct, lf_canopy, # forested area and mean canopy cover
-  aspen, douglas_fir, lodgepole, gambel_oak, sagebrush, # forest type percents
-  pinon_juniper, ponderosa, spruce_fir, white_fir # forest type percents
+  aspen_ha, patch_den, big_patch, # contemporary aspen presence/patches
+  combust, pop_den, wui, wui_dist, # built environment metrics
+  burned_pct, disturbed, # cumulative burned area percent of fireshed since 1984
+  whp_p90, hui_p90, cfl_p90, exposure, # wildfire risk to communities
+  forest_pct, lf_canopy, lf_height # forested area and mean canopy cover
  ) %>%
  # Fill NAs with zero and scale variables
  mutate(
@@ -63,6 +71,19 @@ X <- firesheds %>%
 # Check structure
 str(X)
 
+#########################
+# correlation structure #
+# Compute correlation matrix
+cor_mat <- cor(X, use = "complete.obs", method = "spearman")
+# Plot correlation matrix
+ggcorrplot(cor_mat, method = "circle",
+ type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
+ colors = c("blue", "white", "red")
+)
+rm(cor_mat) # tidy up
+
+
+
 #==============VARIABLE WEIGHTING================#
 
 ##########################
@@ -72,56 +93,114 @@ str(X)
 # 3: 'Grassland-dominated Intermix WUI'
 # 4: 'Grassland -dominated Interface WUI'
 
+# # weight by aspen canopy and patch size
+# # Get un-scaled variable to use as a weight
+# aspen_wt <- scale(firesheds$aspen10_ha, center = FALSE)  # avoid zero centering
+# # Apply to entire matrix (row-wise)
+# X_wt <- X * aspen_wt
+
+# assign "domains" to variables
+# use "domains" to assign weighting schemes
+domains <- list(
+ aspen = X[, c("delta585", "aspen_ha", "patch_den", "big_patch")],
+ fire = X[, c("trend_count", "burned_pct", "disturbed")],
+ socio = X[, c("combust", "pop_den", "wui", "wui_dist")],
+ hazard = X[, c("hui_p90", "whp_p90", "exposure")],
+ forest = X[, c("forest_pct", "lf_canopy", "lf_height", "cfl_p90")]
+)
+
+# Define domains and domain-level weights
+domain_weights <- c(
+ aspen = 1.0,
+ fire = 0.6,
+ socio = 0.8,
+ hazard = 1.0,
+ forest = 0.6
+)
+
+# weight the input variables by domain
+X_domains <- mapply(function(df, w) df * w, domains, domain_weights, SIMPLIFY = FALSE)
+X_domains <- do.call(cbind, X_domains)
+
 
 #==============SOM SETUP================#
 set.seed(123)
 
 # Define SOM grid size (adjust xdim & ydim as needed)
-som.grid <- kohonen::somgrid(xdim = 20, ydim = 20, topo = "hexagonal")
+som.grid <- kohonen::somgrid(
+ xdim = 12, 
+ ydim = 12, 
+ topo = "hexagonal"
+)
 
 # Train the SOM
 som.model <- som(
- as.matrix(X),
+ as.matrix(X_domains),
  grid = som.grid,
  rlen = 5001,   # Number of training iterations
  alpha = c(0.1, 0.02), # Learning rate (start, end)
- keep.data = TRUE)
+ keep.data = TRUE
+)
 
 # View summary of the trained model
 summary(som.model)
 # Plot the nodes
 plot(som.model)
+plot(som.model, type = "changes")
+
+# look at SOM node SD
+# high = variable helps differentiate SOM nodes
+apply(som.model$codes[[1]], 2, sd)
+
 
 
 #==============MAP GRIDS================#
 
+# define the cluster assignments
+n_cluster = 8 # number of clusters to compute
 # Compute distance matrix on SOM codebook vectors
-dist_mat <- dist(som.model$codes[[1]]) 
-
-# Perform hierarchical clustering on SOM node weights
-# som.cluster <- kmeans(som.model$codes[[1]], centers = 6)$cluster  # Adjust 'k' as needed
+dist_mat <- dist(som.model$codes[[1]])
+# hierarchical clustering on SOM node weights
 hc <- hclust(dist_mat, method = "ward.D2")
-som.cluster <- cutree(hc, k = 6)  
+som.cluster <- cutree(hc, k = n_cluster)  
 
 # Assign clusters to each fireshed
 firesheds$som.cluster <- som.cluster[som.model$unit.classif]
 # Check distribution of clusters
 table(firesheds$som.cluster)
 
+# Create a color mapping for the clusters
+cluster_colors <- c(
+ "#1b9e77",  # Teal Green
+ "#d95f02",  # Burnt Orange
+ "#7570b3",  # Slate Blue
+ "#e7298a",  # Magenta
+ "#66a61e",  # Olive Green
+ "#e6ab02",  # Mustard
+ "#a6761d",  # Earth Brown
+ "#666666"   # Charcoal Gray
+)
+names(cluster_colors) <- as.character(1:8)
+
 # make the spatial map
 (cl.map <- ggplot(firesheds) +
  geom_sf(aes(fill = as.factor(som.cluster)), color = NA) +
- scale_fill_brewer(palette = "Accent", name = "SOM Cluster") +
+ # scale_fill_brewer(palette = "Accent", name = "SOM Cluster") +
+ scale_fill_manual(values = cluster_colors, name = "SOM Cluster") +
  theme_void() +
  coord_sf(expand = FALSE) +
- ggspatial::annotation_scale(location = "br", width_hint = 0.1,
-                             pad_x = unit(0.15,"in"), pad_y = unit(0.05,"in"),
-                             line_width = 0.5, text_pad = unit(0.15,"cm"),
-                             height = unit(0.15,"cm")) +
- ggspatial::annotation_north_arrow(location = "br", which_north = "true",
-                                   pad_x = unit(0.25,"in"), pad_y= unit(0.2,"in"),
-                                   width = unit(0.8,"cm"), height = unit(0.8,"cm"),
-                                   style = north_arrow_fancy_orienteering) +
+ ggspatial::annotation_scale(
+  location = "br", width_hint = 0.1,
+  pad_x = unit(0.15,"in"), pad_y = unit(0.05,"in"),
+  line_width = 0.5, text_pad = unit(0.15,"cm"),
+  height = unit(0.15,"cm")
+ ) +
+ ggspatial::annotation_north_arrow(
+  location = "br", which_north = "true",
+  pad_x = unit(0.25,"in"), pad_y= unit(0.2,"in"),
+  width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+  style = north_arrow_fancy_orienteering
+ ) +
  theme(
   legend.title = element_text(angle = 90, size = 9, vjust = 1.2, hjust = 0.5),
   legend.text = element_text(size = 8),
@@ -129,46 +208,32 @@ table(firesheds$som.cluster)
   legend.position = c(0.98, 0.6)
  ) +
  guides(fill = guide_legend(title.position = "left", title.vjust = 1)))
+
 # save the plot.
 out_png <- paste0(projdir,'figures/SRM_Firesheds_SOMclusters.png')
 ggsave(out_png, plot = cl.map, dpi = 500, width = 8, height = 6, bg = 'white')
 
 
+
 #==============RADAR PLOTS================#
 
 # Scale the SOM input variables (already done)
-# Add SOM cluster assignments
-# Get codebook vectors
-som_codes <- som.model$codes[[1]]
-# Run clustering on SOM units
-dist_mat <- dist(som_codes)
-hc <- hclust(dist_mat, method = "ward.D2")
-som.cluster <- cutree(hc, k = 6)  
 # Add cluster labels to each observation (in X)
-X_cl.sc <- X %>%
- mutate(cluster = as.factor(som.cluster[som.model$unit.classif]))
+X_clustered <- X %>%
+ mutate(cluster = as.factor(firesheds$som.cluster))
 
-# Compute cluster means of scaled variables
-cl_means <- X_cl.sc %>%
+# Compute mean for each variable per cluster
+cl_means <- X_clustered %>%
  group_by(cluster) %>%
- summarise(
-  # z-score means per cluster
-  across(where(is.numeric), \(x) mean(x, na.rm = TRUE))
- ) 
+ summarise(across(where(is.numeric), mean, na.rm = TRUE))
 
-##############
-# Radar plot #
-# Tidy the data:
+# Rescale for radar plot aesthetics 
 cl_means_r <- cl_means %>%
- mutate(across(-cluster, ~ rescale(.x))) %>%
+ mutate(across(-cluster, scales::rescale)) %>%
  mutate(group = paste0("Cluster ", cluster)) %>%
- select(-cluster) %>%
- relocate(group)
+ select(group, everything(), -cluster)
 
-# Assign cluster colors same as map
-cluster_colors <- RColorBrewer::brewer.pal(6, "Accent")
-names(cluster_colors) <- paste0("Cluster ", 1:6)
-
+##########################
 # plot all clusters in one
 ggradar(cl_means_r,
         values.radar = c("0", "0.5", "1"),
@@ -187,15 +252,15 @@ ggradar(cl_means_r,
   plot.title = element_text(size = 12, hjust = 0.5)  
  )
 
-
+###########################################################
 # Function to generate ggplot-based radar chart per cluster
 make_ggradar <- function(df_row, cluster_id, fill_color) {
  # Plot with ggradar
  ggradar(df_row,
          values.radar = c("0", "0.5", "1"),
          grid.min = 0, grid.mid = 0.5, grid.max = 1,
-         group.line.width = 1.2,
-         group.point.size = 2,
+         group.line.width = 1.0,
+         group.point.size = 1.6,
          group.colours = fill_color,
          fill = TRUE, fill.alpha = 0.3,
          axis.label.size = 1.8,
@@ -203,24 +268,30 @@ make_ggradar <- function(df_row, cluster_id, fill_color) {
          background.circle.colour = "grey90",
          gridline.mid.colour = "grey80",
          font.radar = "sans",
-         legend.position = "none")
+         legend.position = "none") +
+  theme(
+   plot.margin = margin(t = 15, r = 80, b = 15, l = 80)  
+  )
 }
 
 # List of radar plots
-(radar_plots <- lapply(1:6, function(i) {
+(radar_plots <- lapply(1:n_cluster, function(i) {
  df_i <- cl_means_r %>% filter(group == paste0("Cluster ", i))
  make_ggradar(df_i, paste0("Cluster ", i), cluster_colors[[i]])
 }))
-
 # panel the radar plots
-radar_grid <- patchwork::wrap_plots(radar_plots, ncol = 2)
-radar_grid
-
+(radar_grid <- patchwork::wrap_plots(radar_plots, ncol = 2) + 
+  plot_layout(
+   widths = c(1, 1), 
+   heights = rep(1, ceiling(n_cluster / 2)), 
+   guides = "collect"
+  ) & 
+  theme(plot.margin = margin(1,1,1,1)))
 # combine with the map
-map_radar <- cl.map + radar_grid + 
+(map_radar <- cl.map + radar_grid + 
  patchwork::plot_layout(
-  ncol = 2, widths = c(1.2, 2)) 
-map_radar
+  ncol = 2, widths = c(1.2, 1.2)))
+
 # save the plot.
 out_png <- paste0(projdir,'figures/SRM_Firesheds_SOMclusters_wRadar.png')
 ggsave(out_png, plot = map_radar, dpi = 500, 
@@ -228,7 +299,7 @@ ggsave(out_png, plot = map_radar, dpi = 500,
 
 
 
-#==============ALTERNATE PLOTS================#
+#==============Cluster Characteristics================#
 
 ###########
 # Boxplot #
@@ -261,6 +332,7 @@ codes_m$cluster <- factor(codes_m$cluster, levels = paste0("Cluster ", 1:6))
 out_png <- paste0(projdir,'figures/SRM_Firesheds_SOMclusters_VarMetrics.png')
 ggsave(out_png, plot = p.box, dpi = 500, 
        width = 8, height = 6, bg = 'white')
+
 
 
 # #==============CLUSTER VIZ================#

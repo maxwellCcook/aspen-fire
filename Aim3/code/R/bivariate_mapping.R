@@ -1,3 +1,6 @@
+#############################################
+# Bivariate map of future fire / future aspen
+# for management priority landscapes 
 
 # Load the libraries
 library(tidyverse)
@@ -23,15 +26,14 @@ glimpse(firesheds)
 
 # scale the variables
 firesheds.biv <- firesheds %>%
- mutate(across(c(trend_count, delta245), ~scale(.)))
+ mutate(across(c(trend_count, delta585), ~scale(.)))
 
 # create the bivariate classes
 firesheds.biv <- bi_class(
- firesheds, x = trend_count, y = delta245, 
+ firesheds, x = trend_count, y = delta585, 
  style = "quantile", dim = 3)
 
 # create the bivariate chloropleth map
-# showing trend if fire occurrence and change in future aspen suitability
 p1 <- ggplot() +
  geom_sf(data = firesheds.biv, 
          aes(fill = bi_class), 
@@ -40,15 +42,17 @@ p1 <- ggplot() +
  bi_scale_fill(pal = "GrPink", dim = 3) +
  bi_theme() +
  coord_sf(expand = FALSE) +
- ggspatial::annotation_scale(location = "br", width_hint = 0.1,
-                             pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
-                             line_width = 0.5, text_pad = unit(0.15,"cm"),
-                             height = unit(0.15,"cm")) +
- ggspatial::annotation_north_arrow(location = "br", which_north = "true",
-                                   pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
-                                   width = unit(0.8,"cm"), height = unit(0.8,"cm"),
-                                   style = north_arrow_fancy_orienteering)
-p1
+ ggspatial::annotation_scale(
+  location = "br", width_hint = 0.1,
+  pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
+  line_width = 0.5, text_pad = unit(0.15,"cm"),
+  height = unit(0.15,"cm")
+ ) +
+ ggspatial::annotation_north_arrow(
+  location = "br", which_north = "true",
+  pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
+  width = unit(0.8,"cm"), height = unit(0.8,"cm"),
+  style = north_arrow_fancy_orienteering)
 
 # create the legend
 legend <- bi_legend(
@@ -60,125 +64,78 @@ legend <- bi_legend(
  size = 7)
 
 # merge the plot and legend
-p1.1 <- ggdraw() +
+(p1.1 <- ggdraw() +
  draw_plot(p1, 0, 0, 1, 1) +
- draw_plot(legend, 0.20, .72, 0.25, 0.25)
-p1.1
-
-# save the plot.
-out_png <- paste0(projdir,'Aim3/figures/SRM_Firesheds_Bivar_FutureFireAspen_SSP245.png')
-ggsave(out_png, plot = p1.1, dpi = 500, width = 6, height = 6, bg = 'white')
-
-
-############################################
-# Bivariate map: Future Fire -> Future Aspen
-# SSP585
-
-# scale the variables
-firesheds.biv <- firesheds %>%
- mutate(across(c(trend_count, delta585), ~scale(.)))
-
-# create the bivariate classes
-firesheds.biv <- bi_class(
- firesheds, x = trend_count, y = delta585, 
- style = "quantile", dim = 3)
-
-# create the bivariate chloropleth map
-# showing trend if fire occurrence and change in future aspen suitability
-p2 <- ggplot() +
- geom_sf(data = firesheds.biv, 
-         aes(fill = bi_class), 
-         color = NA, linewidth = 0,
-         show.legend = F) +
- bi_scale_fill(pal = "GrPink", dim = 3) +
- bi_theme() +
- coord_sf(expand = FALSE) +
- ggspatial::annotation_scale(location = "br", width_hint = 0.1,
-                             pad_x = unit(0.01,"in"), pad_y = unit(0.05,"in"),
-                             line_width = 0.5, text_pad = unit(0.15,"cm"),
-                             height = unit(0.15,"cm")) +
- ggspatial::annotation_north_arrow(location = "br", which_north = "true",
-                                   pad_x = unit(0.01,"in"), pad_y= unit(0.2,"in"),
-                                   width = unit(0.8,"cm"), height = unit(0.8,"cm"),
-                                   style = north_arrow_fancy_orienteering)
-p2
-
-# create the legend
-legend <- bi_legend(
- pal = "GrPink",
- dim = 3,
- xlab = "Future Fire ",
- ylab = "Future Aspen ",
- pad_width = 1.2,
- size = 8)
-
-# merge the plot and legend
-p2.1 <- ggdraw() +
- draw_plot(p2, 0, 0, 1, 1) +
- draw_plot(legend, 0.20, .72, 0.25, 0.25)
-p2.1
+ draw_plot(legend, 0.20, .72, 0.25, 0.25))
 
 # save the plot.
 out_png <- paste0(projdir,'Aim3/figures/SRM_Firesheds_Bivar_FutureFireAspen_SSP585.png')
-ggsave(out_png, plot = p2.1, dpi = 500, width = 6, height = 6, bg = 'white')
+ggsave(out_png, plot = p1.1, dpi = 500, width = 6, height = 6, bg = 'white')
 
 
 
-########################################
-# Add inset plots ...
-
+#####################################################
+# Add inset plot showing the total area in each class
+# first, define meaningful labels for classes
 firesheds.biv <- firesheds.biv %>%
  mutate(
   label = recode(
    bi_class,
-   "1-1" = "Low \u2191 Fire, Low Aspen",
-   "1-2" = "Low \u2191 Fire, Moderate Aspen",
-   "1-3" = "Low \u2191 Fire, High Aspen",
-   "2-1" = "Moderate \u2191 Fire, Low Aspen",
-   "2-2" = "Moderate \u2191 Fire, Moderate Aspen",
-   "2-3" = "Moderate \u2191 Fire, High Aspen",
-   "3-1" = "High \u2191 Fire, Low Aspen",
-   "3-2" = "High \u2191 Fire, Moderate Aspen",
-   "3-3" = "High \u2191 Fire, High Aspen"
+   "1-1" = "Low \u2191 Fire,\nDecreasing Aspen",
+   "1-2" = "Low \u2191 Fire,\nLow Change Aspen",
+   "1-3" = "Low \u2191 Fire,\nIncreasing Aspen",
+   "2-1" = "Moderate \u2191 Fire,\nDecreasing Aspen",
+   "2-2" = "Moderate \u2191 Fire,\nLow Change Aspen",
+   "2-3" = "Moderate \u2191 Fire,\nIncreasing Aspen",
+   "3-1" = "High \u2191 Fire,\nDecreasing Aspen",
+   "3-2" = "High \u2191 Fire,\nLow Change Aspen",
+   "3-3" = "High \u2191 Fire,\nIncreasing Aspen"
  ))
 
 # Compute total area per bivariate class
 biv_area <- firesheds.biv %>%
+ as_tibble() %>%
  group_by(label, bi_class) %>%
- summarise(area_ha = sum(sfs_area_ha))  
+ summarise(
+  n_firesheds = n(),
+  area_ha = sum(sfs_area_ha)
+ )  
+head(biv_area)
 
 # Plot
-p_area <- ggplot(biv_area, 
+(p_area <- ggplot(biv_area, 
                  aes(x = reorder(label, area_ha), 
                      y = area_ha, fill = bi_class)) +
  geom_col() +
+ geom_text(aes(label = paste0("N = ",n_firesheds)),
+           hjust = -0.1, size = 3) +
  bi_scale_fill(pal = "GrPink", dim = 3) +
- theme_minimal() +
- labs(x = "Fire-Aspen Class", y = "Total Area (ha)") +
+ theme_classic() +
+  theme(
+   legend.position = "none",
+   plot.margin = margin(t = 5, r = 30, b = 5, l = 5)
+  ) +
+ labs(x = "Fire-Aspen Class", y = "Total Fireshed Area (ha)") +
  scale_y_continuous(
   breaks = c(1e5, 1e6, 2e6, 3e6), 
   labels = label_number(scale_cut = cut_short_scale())  
  ) +
- theme(legend.position = "none",
-       theme(plot.margin = margin(1, 1, 1, 1))) +
- coord_flip()
-p_area
+ coord_flip(clip = "off"))
 
 # save the plot.
 out_png <- paste0(projdir,'Aim3/figures/SouthernRockies_Bivar_FutureFireAspen_area.png')
 ggsave(out_png, plot = p_area, height = 4, width = 4, bg = 'white')
 
 # combine
-p3 <- ggdraw() +
- draw_plot(p2.1, -0.2, 0, 1, 1) +  # Main map takes full space
- draw_plot(p_area, 0.5, 0.15, 0.48, 0.75)
-p3
+(p3 <- ggdraw() +
+ draw_plot(p1.1, -0.2, 0, 1, 1) +  # Main map takes full space
+ draw_plot(p_area, 0.5, 0.15, 0.48, 0.75))
 
 # save the plot.
 out_png <- paste0(projdir,'Aim3/figures/SouthernRockies_Bivar_FutureFireAspen_Panelarea.png')
 ggsave(out_png, plot = p3, height = 7, width = 9, bg = 'white')
 
-
+# Check the areas
 firesheds.biv %>%
  as_tibble() %>%
  mutate(sfs_area_km2 = sfs_area_ha * 0.01) %>%
