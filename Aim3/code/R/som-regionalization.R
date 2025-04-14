@@ -22,44 +22,19 @@ firesheds <- st_read(paste0(projdir,"data/spatial/mod/srm_firesheds_model_data_w
  mutate(bi_class = as.factor(bi_class))
 glimpse(firesheds)
 
-
 ####################################
 # select numeric variables for SOM #
 X <- firesheds %>%
  # drop the geometry
  st_drop_geometry() %>%
- rename(
-  # tidy some of the column names
-  n_patches = number_of_patches,
-  patch_den = patch_density,
-  big_patch = largest_patch_index,
-  pop_den = pop_density_max,
-  pop_n = pop_count_sum,
-  wui_dist = wui_dist_mean,
-  combust = combust_sum,
-  lf_canopy = forest_cc_mean,
-  lf_height = forest_ch_mean,
-  exposure = sfs_exposure,
-  disturbed = pct_disturbed,
-  burned_pct = burned_pct_c
- ) %>%
- mutate(
-  # calculate contemporary aspen hectares
-  aspen_ha = aspen10_pixn * 0.01,
-  forest_ha = forest_pixels * 0.09,
-  # percent of forested area that is aspen?
-  aspen_forest = aspen_ha / forest_ha,
-  # combine the WUI classes
-  wui = wui1 + wui2 + wui3 + wui4
- ) %>%
  # keep only the subset we want to use for SOM
  select(
   trend_count, delta585, # future future / future aspen
-  aspen_ha, patch_den, big_patch, # contemporary aspen presence/patches
-  combust, pop_den, wui, wui_dist, # built environment metrics
-  burned_pct, disturbed, # cumulative burned area percent of fireshed since 1984
-  whp_p90, hui_p90, cfl_p90, exposure, # wildfire risk to communities
-  forest_pct, lf_canopy, lf_height # forested area and mean canopy cover
+  aspen_ha, patch_size, patch_den, big_patch, # contemporary aspen presence/patches
+  combust, pop_den, wui, wui_dist, msbf_count, # built environment metrics
+  burned_pct, disturbed, # proportion of fireshed that has experienced disturbance
+  whp_p90, hui_p90, # wildfire risk to communities
+  forest_pct, lf_canopy, lf_height, cfl_p90 # forested area and mean canopy cover
  ) %>%
  # Fill NAs with zero and scale variables
  mutate(
@@ -102,10 +77,10 @@ rm(cor_mat) # tidy up
 # assign "domains" to variables
 # use "domains" to assign weighting schemes
 domains <- list(
- aspen = X[, c("delta585", "aspen_ha", "patch_den", "big_patch")],
+ aspen = X[, c("delta585", "aspen_ha", "patch_size", "patch_den", "big_patch")],
  fire = X[, c("trend_count", "burned_pct", "disturbed")],
- socio = X[, c("combust", "pop_den", "wui", "wui_dist")],
- hazard = X[, c("hui_p90", "whp_p90", "exposure")],
+ socio = X[, c("combust", "pop_den", "wui", "wui_dist", "msbf_count")],
+ hazard = X[, c("hui_p90", "whp_p90")],
  forest = X[, c("forest_pct", "lf_canopy", "lf_height", "cfl_p90")]
 )
 
@@ -115,7 +90,7 @@ domain_weights <- c(
  fire = 0.6,
  socio = 0.8,
  hazard = 1.0,
- forest = 0.6
+ forest = 0.4
 )
 
 # weight the input variables by domain
@@ -191,21 +166,21 @@ names(cluster_colors) <- as.character(1:8)
  coord_sf(expand = FALSE) +
  ggspatial::annotation_scale(
   location = "br", width_hint = 0.1,
-  pad_x = unit(0.15,"in"), pad_y = unit(0.05,"in"),
+  pad_x = unit(0.15,"in"), pad_y = unit(0.35,"in"),
   line_width = 0.5, text_pad = unit(0.15,"cm"),
   height = unit(0.15,"cm")
  ) +
  ggspatial::annotation_north_arrow(
   location = "br", which_north = "true",
-  pad_x = unit(0.25,"in"), pad_y= unit(0.2,"in"),
+  pad_x = unit(0.15,"in"), pad_y= unit(0.55,"in"),
   width = unit(0.8,"cm"), height = unit(0.8,"cm"),
   style = north_arrow_fancy_orienteering
  ) +
  theme(
-  legend.title = element_text(angle = 90, size = 9, vjust = 1.2, hjust = 0.5),
-  legend.text = element_text(size = 8),
+  legend.title = element_text(angle = 90, size = 11, vjust = 1.2, hjust = 0.5),
+  legend.text = element_text(size = 10),
   legend.key.size = unit(0.4, "cm"),  
-  legend.position = c(0.98, 0.6)
+  legend.position = c(0.24, 0.80)
  ) +
  guides(fill = guide_legend(title.position = "left", title.vjust = 1)))
 
@@ -233,25 +208,6 @@ cl_means_r <- cl_means %>%
  mutate(group = paste0("Cluster ", cluster)) %>%
  select(group, everything(), -cluster)
 
-##########################
-# plot all clusters in one
-ggradar(cl_means_r,
-        values.radar = c("0", "0.5", "1"),
-        grid.min = 0, grid.mid = 0.5, grid.max = 1,
-        group.line.width = 0.8,
-        group.point.size = 1,
-        axis.label.size = 2.5, 
-        grid.label.size = 3.5, 
-        legend.text.size = 8,
-        group.colours = cluster_colors,
-        fill = TRUE, fill.alpha = 0.2,
-        background.circle.colour = "grey90",
-        gridline.mid.colour = "grey80",
-        font.radar = "sans") +
- theme(
-  plot.title = element_text(size = 12, hjust = 0.5)  
- )
-
 ###########################################################
 # Function to generate ggplot-based radar chart per cluster
 make_ggradar <- function(df_row, cluster_id, fill_color) {
@@ -264,7 +220,7 @@ make_ggradar <- function(df_row, cluster_id, fill_color) {
          group.colours = fill_color,
          fill = TRUE, fill.alpha = 0.3,
          axis.label.size = 1.8,
-         grid.label.size = 3,
+         grid.label.size = 4,
          background.circle.colour = "grey90",
          gridline.mid.colour = "grey80",
          font.radar = "sans",
@@ -294,8 +250,8 @@ make_ggradar <- function(df_row, cluster_id, fill_color) {
 
 # save the plot.
 out_png <- paste0(projdir,'figures/SRM_Firesheds_SOMclusters_wRadar.png')
-ggsave(out_png, plot = map_radar, dpi = 500, 
-       width = 8, height = 6, bg = 'white')
+ggsave(out_png, plot = map_radar, dpi = 300, 
+       width = 10, height = 7, bg = 'white')
 
 
 
@@ -303,17 +259,17 @@ ggsave(out_png, plot = map_radar, dpi = 500,
 
 ###########
 # Boxplot #
-codes_df <- as.data.frame(som.model$codes[[1]])
-colnames(codes_df) <- colnames(X)
-codes_df$cluster <- factor(paste0("Cluster ", som.cluster))
-codes_df$cluster_num <- factor(som.cluster) # keep a numeric version
-
-# Reshape for visualization
-codes_m <- melt(codes_df, id.vars = c("cluster", "cluster_num"))
-# Set factor levels explicitly (in case of ordering)
-codes_m$cluster <- factor(codes_m$cluster, levels = paste0("Cluster ", 1:6))
+df <- X %>%
+ mutate(
+  cluster = factor(firesheds$som.cluster),
+  cluster_label = paste0("Cluster ", firesheds$som.cluster) 
+ ) %>%
+ pivot_longer(cols = -c(cluster, cluster_label), 
+              names_to = "variable", values_to = "value")
+# assign clusters
+df$cluster <- factor(df$cluster, levels = as.character(1:n_cluster))
 # Plot variable contributions by cluster with custom colors
-(p.box <- ggplot(codes_m, aes(x = cluster_num, y = value, fill = cluster)) +
+(p.box <- ggplot(df, aes(x = cluster, y = value, fill = cluster)) +
   geom_boxplot(outlier.size = 0.4, lwd = 0.2) +
   facet_wrap(~ variable, scales = "free") +
   theme_classic(base_size = 10) +
@@ -321,11 +277,11 @@ codes_m$cluster <- factor(codes_m$cluster, levels = paste0("Cluster ", 1:6))
   scale_fill_manual(values = cluster_colors, name = "SOM Cluster") +
   theme(
    axis.text.x = element_text(angle = 0, hjust = 0.5),
-   legend.position = c(0.78, 0.08),  # manual position
+   legend.position = c(0.92, 0.08),  # manual position
    legend.direction = "vertical",
    legend.title = element_text(angle = 0, vjust = 0.5, size = 11),
    legend.text = element_text(size = 10),
-   legend.key.size = unit(0.4, "cm")
+   legend.key.size = unit(0.6, "cm")
   ) +
   guides(fill = guide_legend(ncol = 2, byrow = TRUE)))
 # save the plot.
@@ -333,6 +289,18 @@ out_png <- paste0(projdir,'figures/SRM_Firesheds_SOMclusters_VarMetrics.png')
 ggsave(out_png, plot = p.box, dpi = 500, 
        width = 8, height = 6, bg = 'white')
 
+
+#==============LINK TO BIVARIATE CLASSES================#
+# Create a table: rows = bi_class, columns = SOM clusters
+cluster_biv <- firesheds %>%
+ st_drop_geometry() %>%
+ count(label, som.cluster) %>%
+ pivot_wider(names_from = som.cluster, values_from = n, values_fill = 0) %>%
+ arrange(label)
+# View the table
+print(cluster_biv)
+# save CSV
+write_csv(cluster_biv, paste0(projdir, "data/tabular/bivariate_cluster_table.csv"))
 
 
 # #==============CLUSTER VIZ================#
