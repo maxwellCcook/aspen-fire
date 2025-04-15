@@ -303,6 +303,36 @@ print(cluster_biv)
 write_csv(cluster_biv, paste0(projdir, "data/tabular/bivariate_cluster_table.csv"))
 
 
+#==============SUMMARY TABLE WITHIN CLUSTERS================#
+# create a summary table for clusters with all variables:
+sum.tbl <- firesheds %>%
+ st_drop_geometry() %>%
+ select(-c(fs_id, sfs_id)) %>%
+ group_by(som.cluster) %>%
+ summarise(
+  n_firesheds = n(),
+  sfs_area_km2 = sum(sfs_area_ha) * 0.01,
+  aspen_ha = sum(aspen_ha, na.rm=T),
+  aspen_km2 = sum(aspen_ha, na.rm=T) * 0.01,
+  msbf_count_sum = sum(msbf_count, na.rm=T),
+  pop_n = sum(pop_n, na.rm=T),
+  across(c(
+   whp_p90, hui_p90, cfl_p90, exposure, patch_size,
+   delta585, trend_count, aspen10_pct
+  ), \(x) mean(x, na.rm = TRUE)),
+  .groups = "drop"
+ ) %>%
+ mutate(som.cluster = as.factor(som.cluster))
+sum.tbl %>%
+ select(som.cluster, n_firesheds, sfs_area_km2, 
+        exposure, aspen_ha, aspen_km2, patch_size,
+        msbf_count_sum, pop_n)
+# save the table.
+write_csv(sum.tbl, paste0(projdir, "data/tabular/som-cluster_summary_table.csv"))
+
+
+
+
 # #==============CLUSTER VIZ================#
 # 
 
