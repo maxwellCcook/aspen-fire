@@ -535,3 +535,140 @@ def plot_raster(raster, title="", cmap="viridis", legend_lab="", save_file=False
             print("File not saved, please specify an output path.")
 
     plt.show()
+
+
+def download_file(img_url, outname, chunk_size=1024):
+    try:
+        with requests.get(img_url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(outname, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:  # filter out keep-alive chunks
+                        f.write(chunk)
+    except Exception as e:
+        print(f"Error downloading {img_url}: {e}")
+        raise
+
+
+def get_image_service_array(url, ply, out_prefix, res=30, outSR=3857, outdir=None, cleanup=True, plot=False):
+    """
+    Downloads raster imagery from an ArcGIS REST ImageService for a given polygon.
+
+    Parameters:
+    ----------
+    url : str
+        REST endpoint of the ImageServer
+    ply : GeoDataFrame or GeoSeries
+        Area of interest (single polygon or feature)
+    out_prefix : str
+        Prefix for naming downloaded image tiles
+    res : int
+        Pixel resolution (in meters)
+    outSR : str or int
+        Output spatial reference (e.g., 5070); default uses service SR
+    output_dir : str or None
+        Directory to save tiles. If None, uses a temporary directory.
+    cleanup : bool
+        Whether to delete files after processing (if using temp directory)
+
+    Returns:
+    --------
+    xarray.DataArray
+        Combined raster from all tiles (or single tile)
+    """
+
+    # Query the metadata from the service (url)
+    meta = requests.get(url + '?f=pjson').json()
+
+    if 'spatialReference' not in meta:
+        # Try parent layer for spatial reference
+        print(f"[WARNING] No spatialReference found for {url}, checking parent...")
+        parent_url = '/'.join(url.strip('/').split('/')[:-1])
+        parent_meta = requests.get(parent_url + '?f=pjson').json()
+        if 'spatialReference' not in parent_meta:
+            raise ValueError(f"No spatial reference found in metadata for {url} or its parent.")
+        spr = parent_meta['spatialReference']
+    else:
+        spr = meta['spatialReference']
+
+    epsg = spr.get('latestWkid') or spr.get('wkid')
+    if epsg is None:
+        raise ValueError("Unable to determine EPSG code from spatialReference.")
+
+    # Use default max dimensions if missing
+    max_w = meta.get('maxImageWidth', 1024)
+    max_h = meta.get('maxImageHeight', 1024)
+
+    # Reproject the region of interest to the correct CRS
+    # Extract the bounding geometry (optional buffer)
+    if ply.crs is None:
+        raise ValueError("Input geometry must have a defined CRS.")
+    ply_proj = ply.to_crs(epsg)
+    xmin, ymin, xmax, ymax = ply_proj.total_bounds
+
+    # Computing the tiling extents
+    wcells = int((xmax - xmin) / res)
+    hcells = int((ymax - ymin) / res)
+    tile_w = min(wcells, max_w)
+    tile_h = min(hcells, max_h)
+    wcells_l = np.arange(0, wcells, tile_w)
+    hcells_l = np.arange(0, hcells, tile_h)
+
+    # Prepare output directory
+    temp_dir = None
+    if outdir is None:
+        temp_dir = tempfile.mkdtemp()
+        outdir = temp_dir
+    os.makedirs(outdir, exist_ok=True)
+
+    # Download the tiles
+    rasters = []
+    tile = 1
+    for w in wcells_l:
+        for h in hcells_l:
+            xmin2 = xmin + w * res
+            xmax2 = min(xmin + (w + tile_w) * res, xmax)
+            ymin2 = ymin + h * res
+            ymax2 = min(ymin + (h + tile_h) * res, ymax)
+
+            qry = url + '/exportImage?'
+            parm = {
+                'f': 'json',
+                'where': 'Year = 2020',
+                'bbox': f"{xmin2},{ymin2},{xmax2},{ymax2}",
+                'size': f"{tile_w},{tile_h}",
+                'imageSR': outSR,
+                'format': 'tiff'
+            }
+            resp = requests.get(qry, parm, timeout=60)
+            if resp.status_code == 200:
+                result = resp.json()
+                img_url = result.get('href') or result.get('imageUrl')
+
+                if img_url is None:
+                    continue  # Skip to next tile
+
+                out_fp = os.path.join(outdir, f"{out_prefix}_{tile}.tif")
+                download_file(img_url, out_fp)
+                rasters.append(rxr.open_rasterio(out_fp, masked=True).squeeze())
+                tile += 1
+            else:
+                print(f"[WARNING] Tile {tile} failed: HTTP {resp.status_code}")
+
+    if not rasters:
+        raise ValueError("No tiles were successfully downloaded.")
+
+    # 6. Merge tiles
+    result = rasters[0] if len(rasters) == 1 else xr.combine_by_coords(rasters)
+
+    # 7. Cleanup
+    if cleanup and temp_dir is not None:
+        shutil.rmtree(temp_dir)
+
+    # 8. Plot
+    if plot is True:
+        result.plot(cmap='viridis')
+        # plt.title(f"({key})")
+        plt.show()
+
+    return result
