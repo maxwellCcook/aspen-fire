@@ -9,9 +9,20 @@ import shutil
 import numpy as np
 import pandas as pd
 import rioxarray as rxr
+import rasterio as rio
+import xarray as xr
 import matplotlib.pyplot as plt
 import pyproj
+import requests
+import tempfile
+import geopandas as gpd
+import seaborn as sns
 
+from rasterio.features import rasterize
+from rasterio.windows import from_bounds
+from rasterio.enums import Resampling
+from geocube.api.core import make_geocube
+from tqdm.notebook import tqdm
 from itertools import combinations
 from collections import Counter
 from datetime import datetime
@@ -449,26 +460,28 @@ def rasterize_it(zones, ref_img, zone_col, open=False, crs='EPSG:5070'):
     """
 
     if open is True:
-        ref = rxr.open_rasterio(ref_img, masked=True, lock=False, chunks=True).squeeze()
+        ref = rxr.open_rasterio(ref_img).squeeze()
     else:
         ref = ref_img
 
-    # make sure the CRS matches
-    zones = zones.to_crs(crs)
+    # get the reference resolution
+    xres = abs(ref.rio.resolution()[0])
+    yres = abs(ref.rio.resolution()[1])
+    resolution = (-xres, yres)
 
     # Using GeoCube to rasterize the Vector
     rastered = make_geocube(
         vector_data=zones,
         measurements=[zone_col],
-        resolution=(-1000, 1000),
+        resolution=resolution,
         fill=np.nan
     )
 
     # Convert from Dataset to DataArray (extract first variable)
     arr = rastered[zone_col]
     # Ensure it matches the reference raster spatially
-    arr = arr.rio.write_crs(crs)  # Assign CRS
     matched = arr.rio.reproject_match(ref, resampling=Resampling.bilinear)
+    matched = matched.rio.write_crs(ref.rio.crs)
 
     del rastered, arr
 
@@ -537,6 +550,30 @@ def plot_raster(raster, title="", cmap="viridis", legend_lab="", save_file=False
     plt.show()
 
 
+def check_service_type(url):
+    """
+    Checks for either Map/Feature or Image in a service URL.
+
+    Parameters
+    ----------
+    url : TYPE
+        REST service URL.
+
+    Returns
+    -------
+    STRING.
+
+    """
+    if 'ImageServer' in url:
+        return 'Image'
+    elif 'FeatureServer' in url:
+        return 'Feature'
+    elif 'MapServer' in url:
+        return 'Feature'
+    else:
+        return 'Unknown'
+
+
 def download_file(img_url, outname, chunk_size=1024):
     try:
         with requests.get(img_url, stream=True, timeout=60) as r:
@@ -550,7 +587,7 @@ def download_file(img_url, outname, chunk_size=1024):
         raise
 
 
-def get_image_service_array(url, ply, out_prefix, res=30, outSR=3857, outdir=None, cleanup=True, plot=False):
+def get_image_service_array(url, ply, out_prefix, res=30, outSR="", outdir=None, cleanup=True, plot=False):
     """
     Downloads raster imagery from an ArcGIS REST ImageService for a given polygon.
 
@@ -579,22 +616,9 @@ def get_image_service_array(url, ply, out_prefix, res=30, outSR=3857, outdir=Non
 
     # Query the metadata from the service (url)
     meta = requests.get(url + '?f=pjson').json()
-
-    if 'spatialReference' not in meta:
-        # Try parent layer for spatial reference
-        print(f"[WARNING] No spatialReference found for {url}, checking parent...")
-        parent_url = '/'.join(url.strip('/').split('/')[:-1])
-        parent_meta = requests.get(parent_url + '?f=pjson').json()
-        if 'spatialReference' not in parent_meta:
-            raise ValueError(f"No spatial reference found in metadata for {url} or its parent.")
-        spr = parent_meta['spatialReference']
-    else:
-        spr = meta['spatialReference']
-
-    epsg = spr.get('latestWkid') or spr.get('wkid')
-    if epsg is None:
-        raise ValueError("Unable to determine EPSG code from spatialReference.")
-
+    spr = meta['spatialReference']
+    fitem = next(iter(spr))
+    epsg = spr[fitem]
     # Use default max dimensions if missing
     max_w = meta.get('maxImageWidth', 1024)
     max_h = meta.get('maxImageHeight', 1024)
@@ -634,20 +658,14 @@ def get_image_service_array(url, ply, out_prefix, res=30, outSR=3857, outdir=Non
             qry = url + '/exportImage?'
             parm = {
                 'f': 'json',
-                'where': 'Year = 2020',
                 'bbox': f"{xmin2},{ymin2},{xmax2},{ymax2}",
                 'size': f"{tile_w},{tile_h}",
                 'imageSR': outSR,
                 'format': 'tiff'
             }
-            resp = requests.get(qry, parm, timeout=60)
+            resp = requests.get(qry, parm, timeout=120)
             if resp.status_code == 200:
-                result = resp.json()
-                img_url = result.get('href') or result.get('imageUrl')
-
-                if img_url is None:
-                    continue  # Skip to next tile
-
+                img_url = resp.json()['href']
                 out_fp = os.path.join(outdir, f"{out_prefix}_{tile}.tif")
                 download_file(img_url, out_fp)
                 rasters.append(rxr.open_rasterio(out_fp, masked=True).squeeze())
@@ -658,17 +676,98 @@ def get_image_service_array(url, ply, out_prefix, res=30, outSR=3857, outdir=Non
     if not rasters:
         raise ValueError("No tiles were successfully downloaded.")
 
-    # 6. Merge tiles
+    # Merge tiles
     result = rasters[0] if len(rasters) == 1 else xr.combine_by_coords(rasters)
 
-    # 7. Cleanup
+    # Cleanup
     if cleanup and temp_dir is not None:
         shutil.rmtree(temp_dir)
 
-    # 8. Plot
+    # Plot
     if plot is True:
         result.plot(cmap='viridis')
         # plt.title(f"({key})")
         plt.show()
 
     return result
+
+
+def download_lf_csv(product_key, year="2024", out_dir="lf_attributes", overwrite=True):
+    """
+    Downloads the attribute table (CSV) for a given LANDFIRE product and year.
+
+    Parameters:
+    ----------
+    product_key : str
+        Product identifier, e.g., "FBFM40", "EVT", "EVC"
+    year : str
+        LANDFIRE version year, e.g., "2024" for LF240
+    out_dir : str
+        Directory to save the CSV
+    overwrite : bool
+        Whether to overwrite the file if it already exists
+
+    Returns:
+    --------
+    str : Path to the downloaded CSV file
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    filename = f"LF{year}_{product_key}.csv"
+    out_path = os.path.join(out_dir, filename)
+
+    if os.path.exists(out_path) and not overwrite:
+        print(f"[INFO] Attribute table already exists: {out_path}")
+        return pd.read_csv(out_path)
+
+    # Construct download URL
+    csv_url = f"https://landfire.gov/sites/default/files/CSV/{year}/{filename}"
+
+    try:
+        r = requests.get(csv_url)
+        r.raise_for_status()
+        with open(out_path, 'wb') as f:
+            f.write(r.content)
+        print(f"Successfully downloaded: {filename}")
+        return pd.read_csv(out_path)
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Failed to download {filename}: {e}")
+        return None
+
+
+def rasterize_grid_idx(zones, ref_da, value_col='grid_idx'):
+    """
+    Rasterize 'grid_idx' values exactly as-is.
+    """
+    from shapely.geometry import mapping
+
+    # Ensure CRS match
+    zones = zones.to_crs(ref_da.rio.crs)
+
+    # Ensure integer dtype
+    zones[value_col] = pd.to_numeric(zones[value_col], downcast='integer', errors='raise')
+
+    # Build (geometry, value) tuples
+    shapes = ((geom, val) for geom, val in zip(zones.geometry, zones[value_col]))
+
+    # Rasterize
+    out_shape = ref_da.shape
+    transform = ref_da.rio.transform()
+
+    raster = rasterize(
+        shapes=shapes,
+        out_shape=out_shape,
+        transform=transform,
+        fill=0,  # background
+        dtype='uint32',
+        all_touched=True  # optional: include edge pixels
+    )
+
+    # Wrap in xarray
+    grid_idx_da = xr.DataArray(
+        raster,
+        coords={'y': ref_da.y, 'x': ref_da.x},
+        dims=('y', 'x'),
+        name='grid_idx'
+    ).rio.write_crs(ref_da.rio.crs)
+
+    return grid_idx_da
