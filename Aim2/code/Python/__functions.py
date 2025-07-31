@@ -4,13 +4,15 @@ Python library imports
 maxwell.cook@colorado.edu
 """
 
-import gc, time, os, sys, glob
+import gc, time, os, glob
 import shutil
 import numpy as np
 import pandas as pd
 import rioxarray as rxr
 import rasterio as rio
 import xarray as xr
+import matplotlib
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import pyproj
 import requests
@@ -30,6 +32,7 @@ from zoneinfo import ZoneInfo
 from shapely.geometry import box
 from shapely.geometry import Polygon, MultiPolygon
 from rasterstats import zonal_stats
+from pathlib import Path
 
 import warnings
 warnings.filterwarnings("ignore")  # suppresses annoying geopandas warning

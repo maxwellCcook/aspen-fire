@@ -11,13 +11,11 @@ library(patchwork)
 library(forcats)
 library(gstat)
 
-maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
 
+#=========Load gridcell data=========#
 
-#=========Load the Prepped gridcell data=========#
-
-# see INLA_gridcell-prep.R ...
-fp <- paste0(maindir,"data/tabular/mod/model_data_cleaned.csv")
+# see INLA_gridcell-prep.R
+fp <- "data/tabular/mod/model_data_cleaned.csv"
 grid_tm <- read_csv(fp) %>%
  # filter for response variables
  filter(
@@ -26,24 +24,18 @@ grid_tm <- read_csv(fp) %>%
  ) %>%
  # select the model attributes ...
  select(
-  Fire_ID, grid_idx, grid_index, # ID fields
+  fire_id, grid_idx, # ID fields
   log_frp_csum, CBIbc_p90, # response variables
-  fortypnm_gp, species_gp_n, # forest type information
+  fortypnm_gp, proportion, # forest type information
   first_obs_date, day_max_frp, # temporal attributes
-  ba_live, tpp_live, qmd_live, ht_live, dia_live, # tree-level metrics
-  hdr_live, sdi_live, ba_per, stand_dia, # derived gridcell structure metrics
-  tpp_live_total, tpp_dead_total, tpp_live_pr, qmd_live_mean, # gridcell totals/summaries
-  ba_live_total, ba_dead_total, ba_live_pr, # gridcell totals/summaries
-  tree_ht_live_mean, tree_ht_dead_mean, # gridcell totals/summaries
-  tree_dia_live_mean, tree_dia_dead_mean, # gridcell totals/summaries
-  H_ba, H_tpp, # gridcell Shannon diversity index (H)
-  lf_canopy, lf_height, forest_pct, fortyp_pct,
+  BALIVE, SDI, QMD, # TreeMap attributes
+  CC, CH, CBD, CBH, # Fuel attributes
   erc, erc_dv, vpd, vpd_dv, vs, # fire weather
   elev, slope, northness, eastness, tpi, # topography
   day_prop, overlap, # VIIRS aggregation
   dist_to_perim, log_fire_size, # gridcell position and fire size
-  aspen_ba_pr, aspen_tpp_pr, fire_aspen, grid_aspen,
-  x, y, # gridcell center coordinates
+  fire_aspen, grid_aspen, # aspen presence
+  x, y # gridcell center coordinates
  )
 
 glimpse(grid_tm)
