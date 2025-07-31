@@ -233,145 +233,145 @@ length(unique(grid_tm$fire_id))
 out_fp = "data/tabular/mod/model_data_cleaned.csv"
 write_csv(grid_tm, out_fp)
 
-# spatial data (keep one row per gridcell)
-grid_tm.w <- grid_tm %>%
- select(
-  Fire_ID, Fire_Name, grid_idx, fortypnm_gp, species_gp_n, ba_live_pr,
-  log_frp_csum, log_frp_csum_day, log_frp_csum_night,
-  log_frp_max, log_frp_max_day, log_frp_max_night,
-  CBIbc_mean, CBIbc_p90, CBIbc_p95, CBIbc_p99,
-  fortyp_pct, forest_pct, lf_canopy, lf_height, H_tpp, H_ba,
-  first_obs_doy, erc_dv, vpd, vs, elev, slope, aspect, tpi,
-  ba_live_total, tpp_live_total, qmd_live_mean,
-  tree_ht_live_mean, tree_dia_live_mean, 
-  aspen_ba_live, aspen_tpp_live, aspen_ht_live, aspen_dia_live,  aspen_qmd_live,
-  aspen_ba_pr, aspen_tpp_pr, dist_to_perim, overlap, day_prop, tmid_n 
- ) %>%
- pivot_wider(
-  names_from = species_gp_n,
-  values_from = ba_live_pr,
-  values_fill = 0
- ) %>%
- left_join(., grid_tm %>% distinct(grid_idx, geometry), by="grid_idx") %>%
- distinct(grid_idx, fortypnm_gp, .keep_all = T) %>%
- mutate(geometry = st_as_sfc(geometry)) %>%
- st_as_sf(.) %>% 
- st_set_crs(st_crs(5070))
-glimpse(grid_tm.w)
-
-# save it out.
-out_fp = paste0(maindir,"data/spatial/mod/gridcell_model_data_cleaned.gpkg")
-st_write(grid_tm.w, out_fp, append=F)
-rm(grid_tm.w)
-
-
-#===============Explore Distributions, etc.================#
-
-####################################
-# distribution of response variables
-resp_plot <- grid_tm %>%
- # pivot longer to facet plot
- pivot_longer(cols = c(log_frp_csum,
-                       CBIbc_p90),
-              names_to = "variable",
-              values_to = "value") %>%
- # Plot with facets
- ggplot(aes(x = value)) +
- geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
- facet_wrap(
-  ~ variable,
-  scales = "free",
-  labeller = as_labeller(c(log_frp_csum = "log(Cumulative FRP)",
-                           CBIbc_p90 = "90th percentile CBIbc"))) +
- labs(x = "value",
-      y = "Frequency") +
- theme_classic()
-resp_plot
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_ResponseDistribution_FRP-CBI.png')
-ggsave(out_png, plot = resp_plot, dpi=500, bg = 'white')
-rm(resp_plot)
-
-#==========EXPLORE CORRELATIONS==========#
-
-#######################################
-# species-specific correlation matrix #
-sp_cor <- grid_tm %>%
- select(grid_idx, species_gp_n, ba_live) %>%
- spread(species_gp_n, ba_live, fill = 0)  # Reshape to wide format
-# compute the correlation matrix
-sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
-ggcorrplot(sp_cormat, method = "circle", type = "lower",
-           lab = TRUE, lab_size = 3, colors = c("blue", "white", "red"))
-rm(sp_cor, sp_cormat)
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesBA.png')
-ggsave(out_png, dpi=500, bg = 'white')
-rm(sp_cor,sp_cormat)
-
-########################################
-# correlation matrix for fixed effects #
-cor_da <- grid_tm %>%
- mutate(
-  log_fire_size = log(fire_acres)
- ) %>%
- select(
-  fortypnm_gp,
-  # species structure metrics
-  tpp_live, ba_live, qmd_live, ht_live, dia_live, hdr_live, ba_per,
-  tpp_live_total, ba_live_total, qmd_live_mean,
-  tpp_dead_total, ba_dead_total, # dead BA and TPP
-  tpp_live_pr, ba_live_pr, # proportions of TPP and BA
-  forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
-  H_ba, H_tpp, # gridcell species diversity (abundance- and dominance-based)
-  erc, erc_dv, vpd, vpd_dv, # day-of-burn climate
-  fm1000, rmin, tmmx, vs, # day-of-burn climate
-  elev, slope, tpi, northness,  # topography
-  lf_canopy, lf_height, # gridcell canopy percent/height and BA sum
-  day_prop, overlap, # VIIRS detection characteristics
-  log_fire_size, dist_to_perim # fire size and distance to perimeter
- ) %>%
- pivot_wider(
-  names_from = fortypnm_gp,
-  values_from = fortyp_pct,
-  values_fill = 0) %>%
- mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
-
-# Compute correlation matrix
-cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
-# Plot correlation matrix
-ggcorrplot(cor_mat, method = "circle",
- type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
- colors = c("blue", "white", "red")
-)
-rm(cor_da, cor_mat) # tidy up
-# save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects_Full.png')
-ggsave(out_png, dpi=500, width=12, height=12, bg = 'white')
-
-
-##################################################
-# check on the dominance/abundance distributions #
-# get value counts for dominance/abundance by species
-(sp_dom_summary <- grid_tm %>%
-  distinct(grid_idx, fortypnm_gp, 
-           dom_sp_ba, dom_sp_tpp,
-           dom_sp_ht, dom_sp_dia,
-           dom_sp_qmd) %>%
-  group_by(fortypnm_gp) %>%
-  summarise(
-   n_fortyp = n(),
-   n_ba = sum(dom_sp_ba == fortypnm_gp, na.rm = TRUE),
-   n_tpp = sum(dom_sp_tpp == fortypnm_gp, na.rm = TRUE),
-   n_ht = sum(dom_sp_ht == fortypnm_gp, na.rm = TRUE),
-   n_dia = sum(dom_sp_dia == fortypnm_gp, na.rm = TRUE),
-   n_qmd = sum(dom_sp_qmd == fortypnm_gp, na.rm = TRUE)
-  ) %>%
-  arrange(desc(n_fortyp)))
-# save this table out
-write_csv(sp_dom_summary,
-          paste0(maindir,"data/tabular/mod/results/species_dominance_counts.csv"))
-rm(sp_dom_summary)
+# # spatial data (keep one row per gridcell)
+# grid_tm.w <- grid_tm %>%
+#  select(
+#   Fire_ID, Fire_Name, grid_idx, fortypnm_gp, species_gp_n, ba_live_pr,
+#   log_frp_csum, log_frp_csum_day, log_frp_csum_night,
+#   log_frp_max, log_frp_max_day, log_frp_max_night,
+#   CBIbc_mean, CBIbc_p90, CBIbc_p95, CBIbc_p99,
+#   fortyp_pct, forest_pct, lf_canopy, lf_height, H_tpp, H_ba,
+#   first_obs_doy, erc_dv, vpd, vs, elev, slope, aspect, tpi,
+#   ba_live_total, tpp_live_total, qmd_live_mean,
+#   tree_ht_live_mean, tree_dia_live_mean, 
+#   aspen_ba_live, aspen_tpp_live, aspen_ht_live, aspen_dia_live,  aspen_qmd_live,
+#   aspen_ba_pr, aspen_tpp_pr, dist_to_perim, overlap, day_prop, tmid_n 
+#  ) %>%
+#  pivot_wider(
+#   names_from = species_gp_n,
+#   values_from = ba_live_pr,
+#   values_fill = 0
+#  ) %>%
+#  left_join(., grid_tm %>% distinct(grid_idx, geometry), by="grid_idx") %>%
+#  distinct(grid_idx, fortypnm_gp, .keep_all = T) %>%
+#  mutate(geometry = st_as_sfc(geometry)) %>%
+#  st_as_sf(.) %>% 
+#  st_set_crs(st_crs(5070))
+# glimpse(grid_tm.w)
+# 
+# # save it out.
+# out_fp = paste0(maindir,"data/spatial/mod/gridcell_model_data_cleaned.gpkg")
+# st_write(grid_tm.w, out_fp, append=F)
+# rm(grid_tm.w)
+# 
+# 
+# #===============Explore Distributions, etc.================#
+# 
+# ####################################
+# # distribution of response variables
+# resp_plot <- grid_tm %>%
+#  # pivot longer to facet plot
+#  pivot_longer(cols = c(log_frp_csum,
+#                        CBIbc_p90),
+#               names_to = "variable",
+#               values_to = "value") %>%
+#  # Plot with facets
+#  ggplot(aes(x = value)) +
+#  geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
+#  facet_wrap(
+#   ~ variable,
+#   scales = "free",
+#   labeller = as_labeller(c(log_frp_csum = "log(Cumulative FRP)",
+#                            CBIbc_p90 = "90th percentile CBIbc"))) +
+#  labs(x = "value",
+#       y = "Frequency") +
+#  theme_classic()
+# resp_plot
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_ResponseDistribution_FRP-CBI.png')
+# ggsave(out_png, plot = resp_plot, dpi=500, bg = 'white')
+# rm(resp_plot)
+# 
+# #==========EXPLORE CORRELATIONS==========#
+# 
+# #######################################
+# # species-specific correlation matrix #
+# sp_cor <- grid_tm %>%
+#  select(grid_idx, species_gp_n, ba_live) %>%
+#  spread(species_gp_n, ba_live, fill = 0)  # Reshape to wide format
+# # compute the correlation matrix
+# sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
+# ggcorrplot(sp_cormat, method = "circle", type = "lower",
+#            lab = TRUE, lab_size = 3, colors = c("blue", "white", "red"))
+# rm(sp_cor, sp_cormat)
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesBA.png')
+# ggsave(out_png, dpi=500, bg = 'white')
+# rm(sp_cor,sp_cormat)
+# 
+# ########################################
+# # correlation matrix for fixed effects #
+# cor_da <- grid_tm %>%
+#  mutate(
+#   log_fire_size = log(fire_acres)
+#  ) %>%
+#  select(
+#   fortypnm_gp,
+#   # species structure metrics
+#   tpp_live, ba_live, qmd_live, ht_live, dia_live, hdr_live, ba_per,
+#   tpp_live_total, ba_live_total, qmd_live_mean,
+#   tpp_dead_total, ba_dead_total, # dead BA and TPP
+#   tpp_live_pr, ba_live_pr, # proportions of TPP and BA
+#   forest_pct, fortyp_pct, # gridcell forest percent and majority forest type percent
+#   H_ba, H_tpp, # gridcell species diversity (abundance- and dominance-based)
+#   erc, erc_dv, vpd, vpd_dv, # day-of-burn climate
+#   fm1000, rmin, tmmx, vs, # day-of-burn climate
+#   elev, slope, tpi, northness,  # topography
+#   lf_canopy, lf_height, # gridcell canopy percent/height and BA sum
+#   day_prop, overlap, # VIIRS detection characteristics
+#   log_fire_size, dist_to_perim # fire size and distance to perimeter
+#  ) %>%
+#  pivot_wider(
+#   names_from = fortypnm_gp,
+#   values_from = fortyp_pct,
+#   values_fill = 0) %>%
+#  mutate(across(everything(), ~ scale(.) %>% as.numeric()))  # Standardize variables
+# 
+# # Compute correlation matrix
+# cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
+# # Plot correlation matrix
+# ggcorrplot(cor_mat, method = "circle",
+#  type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
+#  colors = c("blue", "white", "red")
+# )
+# rm(cor_da, cor_mat) # tidy up
+# # save the plot.
+# out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects_Full.png')
+# ggsave(out_png, dpi=500, width=12, height=12, bg = 'white')
+# 
+# 
+# ##################################################
+# # check on the dominance/abundance distributions #
+# # get value counts for dominance/abundance by species
+# (sp_dom_summary <- grid_tm %>%
+#   distinct(grid_idx, fortypnm_gp, 
+#            dom_sp_ba, dom_sp_tpp,
+#            dom_sp_ht, dom_sp_dia,
+#            dom_sp_qmd) %>%
+#   group_by(fortypnm_gp) %>%
+#   summarise(
+#    n_fortyp = n(),
+#    n_ba = sum(dom_sp_ba == fortypnm_gp, na.rm = TRUE),
+#    n_tpp = sum(dom_sp_tpp == fortypnm_gp, na.rm = TRUE),
+#    n_ht = sum(dom_sp_ht == fortypnm_gp, na.rm = TRUE),
+#    n_dia = sum(dom_sp_dia == fortypnm_gp, na.rm = TRUE),
+#    n_qmd = sum(dom_sp_qmd == fortypnm_gp, na.rm = TRUE)
+#   ) %>%
+#   arrange(desc(n_fortyp)))
+# # save this table out
+# write_csv(sp_dom_summary,
+#           paste0(maindir,"data/tabular/mod/results/species_dominance_counts.csv"))
+# rm(sp_dom_summary)
 
 
 

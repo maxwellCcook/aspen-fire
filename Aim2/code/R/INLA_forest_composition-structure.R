@@ -22,11 +22,36 @@ grid_tm <- read_csv(fp) %>%
   log_frp_csum > 0,
   CBIbc_p90 > 0
  ) %>%
+ # remove NA on BALIVE
+ filter(
+  !is.na(BALIVE), 
+  !is.infinite(BALIVE)
+ ) %>%
+ # create a forest proportion
+ group_by(grid_idx) %>%
+ mutate(
+  forest_prop = sum(proportion, na.rm=T),
+  balive_total = sum(BALIVE, na.rm=T)) %>%
+ ungroup() %>%
+ mutate(
+  balive_prop = BALIVE / balive_total,
+  dom_fortyp = dom_fortyp %>%
+   tolower() %>%
+   gsub("–", "_", .) %>%  # en-dash to underscore
+   gsub("-", "_", .) %>%
+   gsub(" ", "_", .),
+  fortypnm_gp = fortypnm_gp %>%
+   tolower() %>%
+   gsub("–", "_", .) %>%  # en-dash to underscore
+   gsub("-", "_", .) %>%
+   gsub(" ", "_", .)
+ ) %>%
  # select the model attributes ...
  select(
   fire_id, grid_idx, # ID fields
   log_frp_csum, CBIbc_p90, # response variables
-  fortypnm_gp, proportion, # forest type information
+  fortypnm_gp, dom_fortyp, proportion, 
+  forest_prop, balive_prop, balive_total, # forest type information
   first_obs_date, day_max_frp, # temporal attributes
   BALIVE, SDI, QMD, # TreeMap attributes
   CC, CH, CBD, CBH, # Fuel attributes
@@ -36,12 +61,61 @@ grid_tm <- read_csv(fp) %>%
   dist_to_perim, log_fire_size, # gridcell position and fire size
   fire_aspen, grid_aspen, # aspen presence
   x, y # gridcell center coordinates
- )
+ ) %>%
+ distinct(grid_idx, fortypnm_gp, .keep_all=T)
 
 glimpse(grid_tm)
 
-gc()
+print(length(unique(grid_tm$grid_idx))) # unique gridcells
 
+# Check NAs
+grid_tm %>%
+ summarize(across(
+  .cols = c(BALIVE, SDI, QMD, CC, vs, balive_prop),
+  .fns = list(
+   na = ~sum(is.na(.)),
+   inf = ~sum(is.infinite(.))
+  ),
+  .names = "{.col}_{.fn}"
+ ))
+
+# check on BALIVE
+grid_tm %>%
+ summarize(
+  min = min(BALIVE, na.rm = TRUE),
+  q10 = quantile(BALIVE, 0.10, na.rm = TRUE),
+  q50 = quantile(BALIVE, 0.50, na.rm = TRUE),
+  q90 = quantile(BALIVE, 0.90, na.rm = TRUE),
+  q99 = quantile(BALIVE, 0.99, na.rm = TRUE),
+  max = max(BALIVE, na.rm = TRUE),
+  n_extreme = sum(BALIVE > 1e4, na.rm = TRUE),
+  total = sum(!is.na(BALIVE))
+ )
+
+# filter extreme values of BALIVE
+# remove SDI and QMD
+grid_tm <- grid_tm %>%
+ filter(BALIVE < 1e30) %>%
+ select(-c(SDI, QMD))
+ 
+# check the distribution
+ggplot(grid_tm, aes(x = BALIVE)) +
+ geom_histogram(bins = 100) +
+ scale_x_continuous(trans = "log10") +
+ theme_minimal() +
+ labs(title = "Distribution of BALIVE", x = "BALIVE (log10)", y = "Count")
+
+# get the BALIVE of the dominant forest type
+balive_dom <- grid_tm %>%
+ filter(fortypnm_gp == dom_fortyp) %>%
+ select(grid_idx, balive_dom = BALIVE, balive_dom_pr = balive_prop)
+
+# join back
+grid_tm <- grid_tm %>%
+ left_join(balive_dom, by = "grid_idx") %>%
+ filter(!is.na(balive_dom))
+
+rm(balive_dom)
 
 ###################################################
 # check how many grids are majority forested, etc #
@@ -49,29 +123,29 @@ gc()
 # Check how many grids are > 50% forested
 print(paste0(
  "Percent forested gridcells (>50% gridcell area): ",
- round(dim(grid_tm %>% filter(forest_pct >= 0.50) %>% distinct(grid_idx))[1]/
+ round(dim(grid_tm %>% filter(forest_prop >= 0.50) %>% distinct(grid_idx))[1]/
         dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
 ))
 
-# retain predominantly forested gridcells ...
-grid_tm <- grid_tm %>%
- filter(forest_pct >= 0.50)
-# Check how many gridcells and fires remain
-print(length(unique(grid_tm$Fire_ID))) # unique fires
-print(length(unique(grid_tm$grid_idx))) # unique gridcells
+# # retain predominantly forested gridcells ...
+# grid_tm <- grid_tm %>%
+#  filter(forest_prop >= 0.50)
+# # Check how many gridcells and fires remain
+# print(length(unique(grid_tm$fire_id))) # unique fires
+# print(length(unique(grid_tm$grid_idx))) # unique gridcells
 
 
 ##################################################
 # Assess the proportion of live basal area and TPP
 # filter potential noise in the data ...
 (qt.ba <- tibble::enframe(
- quantile(grid_tm$ba_live_pr, probs = seq(0.1, 0.9, by = .1)),
+ quantile(grid_tm$balive_prop, probs = seq(0.1, 0.9, by = .1)),
  name = "qt", value = "val"
 ))
 (qt10.ba = qt.ba[1,]$val) # 10%
 
 # plot the distribution and 10th percentile line
-ggplot(grid_tm, aes(x = ba_live_pr)) +
+ggplot(grid_tm, aes(x = balive_prop)) +
  geom_histogram(
   bins = 30, 
   fill = "grey", 
@@ -79,55 +153,30 @@ ggplot(grid_tm, aes(x = ba_live_pr)) +
   alpha = 0.4
  ) +
  geom_vline(
-  xintercept = qt10.ba, color = "darkred", linewidth=1, linetype = "dashed"
+  xintercept = 0.05, color = "darkred", linewidth=1, linetype = "dashed"
  ) +
  labs(x = "Proportion live basal area", y = "Count") +
  theme_classic()
 
-# abundance (TPP)
-(qt.tpp <- tibble::enframe(
- quantile(grid_tm$tpp_live_pr, probs = seq(0.1, 0.9, by = .1)),
- name = "qt", value = "val"
-))
-(qt10.tpp = qt.tpp[1,]$val) # 10%
-
-# plot the distribution and 10th percentile line
-ggplot(grid_tm, aes(x = tpp_live_pr)) +
- geom_histogram(
-  bins = 30, 
-  fill = "grey", 
-  color="grey40", 
-  alpha = 0.4
- ) +
- geom_vline(
-  xintercept = qt10.tpp, color = "darkred", linewidth=1, linetype = "dashed"
- ) +
- labs(x = "Proportion trees/acre", y = "Count") +
- theme_classic()
-
 # check percentage of rows below the threshold
 1 - dim(grid_tm %>% filter(
- ba_live_pr >= qt10.ba &
-  tpp_live_pr >= qt10.tpp
+ balive_prop >= qt10.ba
 ))[1] / dim(grid_tm)[1]
 
-# 10% of BA live
-dim(grid_tm %>% filter(ba_live_pr >= 0.10))[1] / dim(grid_tm)[1]
+# 5% of BA live
+dim(grid_tm %>% filter(balive_prop >= 0.05))[1] / dim(grid_tm)[1]
 
 # filter species contributing less than the Nth percentile
 grid_tm <- grid_tm %>%
  # filter noise in species data
  filter(
   # remove noise from small species proportions
-  # e.g., below the 10th percentile of BA & TPP
-  # (ba_live_pr >= qt10.ba & tpp_live_pr >= qt10.tpp),
-  # Or, could just use proportion of basal area
-  # remove species below 5% of BA or TPP
-  # ba_live_pr >= 0.05 | tpp_live_pr >= 0.05
+  # e.g., less than 5% of live basal area
+  balive_prop >= 0.05
  )
 
 # Tidy up !
-rm(qt.ba, qt.tpp, qt10.ba, qt10.tpp)
+rm(qt.ba, qt10.ba)
 
 
 ##########################################
@@ -136,8 +185,8 @@ rm(qt.ba, qt.tpp, qt10.ba, qt10.tpp)
 
 # check on the grid cell counts
 gridcell_counts <- grid_tm %>%
- distinct(Fire_ID, grid_index) %>% # keep only distinct rows
- group_by(Fire_ID) %>%
+ distinct(fire_id, grid_idx) %>% # keep only distinct rows
+ group_by(fire_id) %>%
  summarise(n = n())
 # check the distribution
 summary(gridcell_counts$n)
@@ -152,31 +201,29 @@ summary(gridcell_counts$n)
 # filter fires below the 10th percentile
 fires_keep <- gridcell_counts %>%
  filter(n >= qt10) %>%
- pull(Fire_ID)
+ pull(fire_id)
 
 # filter to retain fires with enough gridcells
 grid_tm <- grid_tm %>%
- filter(Fire_ID %in% fires_keep)
+ filter(fire_id %in% fires_keep)
 
 # Check how many gridcells and fires remain
-print(length(unique(grid_tm$Fire_ID))) # unique fires
+print(length(unique(grid_tm$fire_id))) # unique fires
 print(length(unique(grid_tm$grid_idx))) # unique gridcells
 
 # tidy up!
 rm(gridcell_counts, fires_keep, qt, qt10)
 
-#########################################
-# final check on how many grids and fires
-length(unique(grid_tm$grid_idx))
-length(unique(grid_tm$Fire_ID))
-
 ###############################
 # check on the species counts #
 grid_tm %>% 
- group_by(species_gp_n) %>%
- summarise(n = length(species_gp_n)) %>%
+ group_by(fortypnm_gp) %>%
+ summarise(n = length(fortypnm_gp)) %>%
  arrange(desc(n))
 
+grid_tm %>%
+ distinct(grid_idx, .keep_all = T) %>%
+ count(dom_fortyp, sort = TRUE)
 
 
 #===========MODEL SETUP==============#
@@ -186,23 +233,22 @@ grid_tm %>%
 da <- grid_tm %>%
  mutate(
   # set factors
-  Fire_ID = as.factor(Fire_ID),
+  fire_id = as.factor(fire_id),
   grid_idx = as.factor(grid_idx),
-  grid_index = as.factor(grid_index),
   first_obs_date = as.factor(first_obs_date),
   day_max_frp = as.factor(day_max_frp),
   grid_aspen = as.factor(grid_aspen),
   fire_aspen = as.factor(fire_aspen),
   # force aspen to be the baseline factor #
-  species_gp_n = fct_relevel(species_gp_n, "quaking_aspen"),
-  fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen"),
+  fortypnm_gp = fct_relevel(fortypnm_gp, "aspen"),
+  dom_fortyp = fct_relevel(dom_fortyp, "aspen"),
   # center/scale metrics (fixed effects)
-   across(
-    # only scale numeric columns not in exclude list
-    .cols = where(is.numeric) & !all_of(c("log_frp_csum","CBIbc_p90",
-                                          "log_fire_size","x","y")),  
-    .fns = ~ as.numeric(scale(.))
-   )
+  across(
+   # only scale numeric columns not in exclude list
+   .cols = where(is.numeric) & !all_of(c("log_frp_csum","CBIbc_p90",
+                                         "log_fire_size","x","y")),  
+   .fns = ~ as.numeric(scale(.))
+  )
   ) %>%
  # let's rename the outcome vars
  rename(
@@ -213,7 +259,7 @@ da <- grid_tm %>%
 
 # check the factor levels
 # make sure aspen is first
-levels(da$species_gp_n)
+levels(da$dom_fortyp)
 levels(da$fortypnm_gp)
 
 
@@ -244,14 +290,10 @@ gc()
 ########################################
 # correlation matrix for fixed effects #
 cor_da <- da %>%
- select(c("fortypnm_gp", where(is.numeric))) %>%
- select(-c("x","y")) %>%
- pivot_wider(
-  names_from = fortypnm_gp,
-  values_from = fortyp_pct,
-  values_fill = 0)
+ select(where(is.numeric)) %>%
+ select(-c("x","y"))
 # Compute correlation matrix
-cor_mat <- cor(cor_da, use = "complete.obs", method = "spearman")
+cor_mat <- cor(cor_da, method = "spearman")
 # Plot correlation matrix
 ggcorrplot(cor_mat, method = "circle",
            type = "lower", lab = TRUE, lab_size = 3, tl.cex = 10,
@@ -259,7 +301,7 @@ ggcorrplot(cor_mat, method = "circle",
 )
 
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_FixedEffects_Model.png')
+out_png <- 'figures/INLA_CorrelationMatrix_FixedEffects_Model.png'
 ggsave(out_png, dpi=500, width=12, height=12, bg = 'white')
 
 rm(cor_da, cor_mat) # tidy up
@@ -268,95 +310,35 @@ rm(cor_da, cor_mat) # tidy up
 #######################################
 # species-specific correlation matrix #
 sp_cor <- da %>%
- select(grid_idx, species_gp_n, tpp_live) %>%
- spread(species_gp_n, tpp_live, fill = 0)  # Reshape to wide format
+ select(grid_idx, fortypnm_gp, BALIVE) %>%
+ group_by(grid_idx, fortypnm_gp) %>%
+ summarize(BALIVE = sum(BALIVE, na.rm = TRUE), .groups = "drop") %>%
+ pivot_wider(
+  names_from = fortypnm_gp,
+  values_from = BALIVE,
+  values_fill = 0
+ )
 # compute the correlation matrix
 sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
 ggcorrplot(sp_cormat, method = "circle", type = "lower",
            lab = TRUE, lab_size = 3, colors = c("blue", "white", "red"))
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesTPP_sc.png')
+out_png <- 'figures/INLA_CorrelationMatrix_SpeciesTPP_sc.png'
 ggsave(out_png, dpi=500, bg = 'white')
 
 rm(sp_cor,sp_cormat) # tidy up
 
 
-#####################################################
-# species-specific correlations by structure metric #
-
-da %>%
- group_by(species_gp_n) %>%
- summarise(corr = list(
-  cor.test(ba_live, sdi_live, method = "spearman", exact = FALSE)
- )) %>%
- mutate(tidy_result = map(corr, broom::tidy)) %>%
- unnest(tidy_result) %>%
- select(species_gp_n, estimate, p.value, method)
-
-# height and diameter
-da %>%
- group_by(species_gp_n) %>%
- summarise(corr = list(
-  cor.test(ba_live, hdr_live, method = "spearman", exact = FALSE)
- )) %>%
- mutate(tidy_result = map(corr, broom::tidy)) %>%
- unnest(tidy_result) %>%
- select(species_gp_n, estimate, p.value, method)
-
-# QMD
-da %>%
- group_by(species_gp_n) %>%
- summarise(corr = list(
-  cor.test(ba_live, qmd_live, method = "spearman", exact = FALSE)
- )) %>%
- mutate(tidy_result = map(corr, broom::tidy)) %>%
- unnest(tidy_result) %>%
- select(species_gp_n, estimate, p.value, method)
-
-# forest percent and proportion TPP
-da %>%
- group_by(species_gp_n) %>%
- summarise(corr = list(
-  cor.test(hdr_live, sdi_live, method = "spearman", exact = FALSE)
- )) %>%
- mutate(tidy_result = map(corr, broom::tidy)) %>%
- unnest(tidy_result) %>%
- select(species_gp_n, estimate, p.value, method)
-
-# forest percent and proportion TPP
-da %>%
- group_by(species_gp_n) %>%
- summarise(corr = list(
-  cor.test(hdr_live, qmd_live, method = "spearman", exact = FALSE)
- )) %>%
- mutate(tidy_result = map(corr, broom::tidy)) %>%
- unnest(tidy_result) %>%
- select(species_gp_n, estimate, p.value, method)
-
-# ba live and tpp live
-da %>%
- group_by(species_gp_n) %>%
- summarise(corr = list(
-  cor.test(ba_live, tpp_live, method = "spearman", exact = FALSE)
- )) %>%
- mutate(tidy_result = map(corr, broom::tidy)) %>%
- unnest(tidy_result) %>%
- select(species_gp_n, estimate, p.value, method)
-
-
-gc()
-
-
-###############################
-# Save a fire perimeter dataset
-fp <- paste0(maindir,"data/spatial/mod/srm_fire_census_2017_to_2023_ics_perims.gpkg")
+###################################################
+# Save a fire perimeter dataset after the filtering
+fp <- "data/spatial/mod/srm_fire_census_2017_to_2023_ics_perims.gpkg"
 fires <- st_read(fp)
 # subset and save out
 fires <- fires %>% 
- filter(Fire_ID %in% unique(da$Fire_ID)) %>%
+ filter(Fire_ID %in% unique(da$fire_id)) %>%
  st_as_sf() %>%
  st_transform(st_crs(5070))
-st_write(fires,paste0(maindir,"data/spatial/mod/srm_fire_census_model_data.gpkg"),
+st_write(fires, "data/spatial/mod/srm_fire_census_model_data.gpkg",
          append=F)
 # tidy up
 rm(fires)
@@ -364,29 +346,50 @@ rm(fires)
 
 ###########################################
 # create the summary table for sample sizes
-sample_sizes <- da %>%
+# of the dominant forest type by grid cell
+dom_occurrence <- da %>%
  distinct(grid_idx, .keep_all = T) %>%
- group_by(fortypnm_gp) %>%
+ group_by(dom_fortyp) %>%
  summarise(
   n_cells = n(),
-  n_fires = n_distinct(Fire_ID),
-  pct_fires = n_fires / length(unique(da$Fire_ID)),
+  n_fires = n_distinct(fire_id),
+  pct_fires = n_fires / length(unique(da$fire_id)),
   .groups = "drop"
  ) %>%
  arrange(desc(n_cells))  
-print(sample_sizes)
+print(dom_occurrence)
+
+# do this for all occurrences
+fortyp_occurrence <- da %>%
+ group_by(fortypnm_gp) %>%
+ summarise(
+  n_occurrences = n(),
+  n_gridcells = n_distinct(grid_idx),
+  pct_gridcells = n_gridcells / length(unique(da$grid_idx)),
+  .groups = "drop"
+ ) %>%
+ arrange(desc(n_occurrences))
+print(fortyp_occurrence)
+
+# combine them 
+sample_sizes <- full_join(
+ dom_occurrence,
+ fortyp_occurrence,
+ by = c("dom_fortyp" = "fortypnm_gp")
+) %>%
+ arrange(desc(n_occurrences))
 
 # Save this file out.
 write_csv(sample_sizes, paste0("data/tabular/mod/results/model_sample_size_fortyp.csv"))
 
-rm(sample_sizes)
+rm(sample_sizes, dom_occurrence, fortyp_occurrence)
 
 
 #========CREATE THE SPATIAL MESH GRID=========#
 
 # extract gridcell coordinates
 grid_sf <- da %>%
- arrange(grid_index) %>%
+ arrange(grid_idx) %>%
  st_as_sf(., coords = c("x", "y"), crs = 4326)
 # extract coordinates
 coords <- grid_sf %>% st_coordinates(.)
@@ -479,25 +482,22 @@ dim(inla.stack.A(stack.frp))
 # Model with spatial process (SPDE) and fire-level random effects
 
 # setup the model formula
-mf.frp <- frpc ~ 1 + 
- # forest composition and structure
- fortypnm_gp + # majority forest type (factor, aspen baseline)
- fortypnm_gp:fortyp_pct + # by proportional area
+mf.frp <- frpc ~ 1 +
  # tree-level structure X dominance
- species_gp_n:ba_live + # species live basal area
- species_gp_n:qmd_live + # species quadratic mean diameter
- species_gp_n:hdr_live + # species height-diameter ratio
+ fortypnm_gp:proportion + # proportion of gridcell
+ fortypnm_gp:BALIVE + # species live basal area
+ fortypnm_gp:CC + # species canopy cover percent
+ fortypnm_gp:CBH + # species canopy base height
  # gridcell totals
- ba_live_total + tpp_live_total + # total live BA and TPP
- # other fixed effects 
- lf_canopy + # gridcell forest canopy cover percent
+ # other fixed effects
+ forest_prop + # gridcell forest proportion
  erc_dv + vpd + vs + # day-of-burn fire weather
  elev + slope + northness + eastness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
  day_prop +  # gridcell proportion daytime detections
  dist_to_perim + # gridcell distance to perimeter
  # random/latent effects
- f(Fire_ID, model = "iid", hyper = pr.pc_prec) + # fire-level random effects
+ f(fire_id, model = "iid", hyper = pr.pc_prec) + # fire-level random effects
  f(mesh.idx, model = spde.ml) # spatial process model
 
 # fit the model
@@ -556,7 +556,7 @@ spat.eff.frp <- data.frame(
 glimpse(spat.eff.frp)
 
 # write this a spatial file
-out_fp = paste0(maindir,"data/spatial/mod/spatial_effect_FRP_spp.gpkg")
+out_fp = "data/spatial/mod/spatial_effect_FRP_spp.gpkg"
 st_write(spat.eff.frp, out_fp, append=F)
 
 # Tidy up!
@@ -578,7 +578,7 @@ exp.frp <- ml.frp$summary.fixed %>%
 exp.frp %>% select(parameter, exp_mean, lower_ci, upper_ci)
 
 # save this table
-write_csv(exp.frp, paste0(maindir,"data/tabular/mod/results/INLA_exp_FRP.csv"))
+write_csv(exp.frp, "data/tabular/mod/results/INLA_exp_FRP.csv")
 
 
 #===========POSTERIOR EFFECTS===========#
@@ -600,15 +600,12 @@ tidy.effects.frp <- tibble::tibble(
  ) %>%  
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live") ~ "Live basal area",
-   str_detect(parameter, "ba_live_pr") ~ "Proportion of live basal area",
-   str_detect(parameter, "hdr_live") ~ "Diameter/height ratio",
-   str_detect(parameter, "sdi_live") ~ "Stand density index",
-   str_detect(parameter, "qmd_live") ~ "Quadratic mean diameter",
-   str_detect(parameter, "fortyp_pct") ~ "Forest type proportion",
+   str_detect(parameter, "BALIVE") ~ "Live basal area",
+   str_detect(parameter, "balive_prop") ~ "Proportion of live basal area",
+   str_detect(parameter, "proportion") ~ "Forest type proportion",
    str_detect(parameter, "lf_canopy") ~ " Canopy cover percent (average)",
    str_detect(parameter, "lf_height") ~ " Canopy height (average)",
-   str_detect(parameter, "ba_live_total") ~ "Live basal area (total)",
+   str_detect(parameter, "BALIVE_total") ~ "Live basal area (total)",
    str_detect(parameter, "ba_dead_total") ~ "Dead basal area (total)",
    str_detect(parameter, "tpp_live_total") ~ "Live trees/acre (total)",
    str_detect(parameter, "vs") ~ "Wind speed",
@@ -625,7 +622,7 @@ tidy.effects.frp <- tibble::tibble(
   ),
   # Extract species names from parameters
   species = case_when(
-   str_detect(parameter, "species_gp_n") ~ str_extract(parameter, "(?<=species_gp_n)[a-zA-Z_ñ]+"),
+   str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
    str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
    TRUE ~ NA_character_  # For non-species effects
   )
@@ -640,7 +637,7 @@ tidy.effects.frp <- tibble::tibble(
 tidy.effects.frp <- tidy.effects.frp %>%
  mutate(
   species = case_when(
-   str_detect(parameter, "species_gp_n") ~ str_extract(parameter, "(?<=species_gp_n)[a-zA-Z_ñ]+"),
+   str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
    str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
    parameter == "fortyp_pct" ~ "quaking_aspen",  # baseline
    TRUE ~ NA_character_
@@ -724,11 +721,11 @@ mf.cbi <- cbibc90 ~ 1 +
  fortypnm_gp + # majority forest type (factor, aspen baseline)
  fortypnm_gp:fortyp_pct + # by proportional area
  # tree-level structure X dominance
- species_gp_n:ba_live + # species live basal area
- species_gp_n:qmd_live + # species quadratic mean diameter
- species_gp_n:hdr_live + # species height-diameter ratio
+ fortypnm_gp:BALIVE + # species live basal area
+ fortypnm_gp:qmd_live + # species quadratic mean diameter
+ fortypnm_gp:hdr_live + # species height-diameter ratio
  # gridcell totals
- ba_live_total + tpp_live_total + # total live BA and TPP
+ BALIVE_total + tpp_live_total + # total live BA and TPP
  # other fixed effects 
  lf_canopy + # gridcell forest canopy cover percent
  erc_dv + vpd + vs + # day-of-burn fire weather
@@ -737,7 +734,7 @@ mf.cbi <- cbibc90 ~ 1 +
  day_prop +  # gridcell proportion daytime detections
  dist_to_perim + # gridcell distance to perimeter
  # random/latent effects
- f(Fire_ID, model = "iid", hyper = pr.pc_prec) + # fire-level random effects
+ f(fire_id, model = "iid", hyper = pr.pc_prec) + # fire-level random effects
  f(mesh.idx, model = spde.ml) # spatial process model
 
 # fit the model
@@ -835,14 +832,14 @@ tidy.effects.cbi <- tibble::tibble(
  ) %>%  
  mutate(
   effect = case_when(
-   str_detect(parameter, "ba_live") ~ "Live basal area",
-   str_detect(parameter, "ba_live_pr") ~ "Proportion of live basal area",
+   str_detect(parameter, "BALIVE") ~ "Live basal area",
+   str_detect(parameter, "BALIVE_pr") ~ "Proportion of live basal area",
    str_detect(parameter, "hdr_live") ~ "Diameter/height ratio",
    str_detect(parameter, "sdi_live") ~ "Stand density index",
    str_detect(parameter, "qmd_live") ~ "Quadratic mean diameter",
    str_detect(parameter, "fortyp_pct") ~ "Forest type proportion",
    str_detect(parameter, "lf_canopy") ~ " Canopy cover percent (average)",
-   str_detect(parameter, "ba_live_total") ~ "Live basal area (total)",
+   str_detect(parameter, "BALIVE_total") ~ "Live basal area (total)",
    str_detect(parameter, "ba_dead_total") ~ "Dead basal area (total)",
    str_detect(parameter, "tpp_live_total") ~ "Live trees/acre (total)",
    str_detect(parameter, "vs") ~ "Wind speed",
@@ -859,7 +856,7 @@ tidy.effects.cbi <- tibble::tibble(
   ),
   # Extract species names from parameters
   species = case_when(
-   str_detect(parameter, "species_gp_n") ~ str_extract(parameter, "(?<=species_gp_n)[a-zA-Z_ñ]+"),
+   str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
    str_detect(parameter, "fortypnm_gp") ~ str_extract(parameter, "(?<=fortypnm_gp)[a-zA-Z_ñ]+"),
    TRUE ~ NA_character_  # For non-species effects
   )
