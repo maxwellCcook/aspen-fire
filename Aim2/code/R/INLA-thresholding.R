@@ -21,11 +21,35 @@ stack.cbi <- readRDS("code/R/models/stack_cbi.rds")
 # Load the mean/sd for fixed effects (pre-scaling)
 sc_lookup <- read_csv("data/tabular/mod/var_scaling_lookup.csv")
 
-
-
 # ----------------------------------#
 # 1b. Extract the fixed effect coefficients
 fixed_eff <- ml.cbi.re.sp$summary.fixed
+# gather the standard deviation for forest type proportion
+sd_fortyp <- sc_lookup$fortyp_pct_sd
+# gather the aspen effect
+aspen_effect <- fixed_eff["fortypnm_gpquaking_aspen:fortyp_pct", ]
+
+# How much benefit for every 10% increase in aspen cover
+thresh <- 0.10  # 10%
+(rsc_mean <- aspen_effect$mean * (thresh / sd_fortyp))
+(rsc_lwr  <- aspen_effect$`0.025quant` * (thresh / sd_fortyp))
+(rsc_upr  <- aspen_effect$`0.975quant` * (thresh / sd_fortyp))
+(exp(rsc_mean) - 1) * 100
+
+#####
+# FRP
+
+# Load fitted INLA model
+ml.frp.re.sp <- readRDS("code/R/models/ml_frp_re_sp.rds")
+# Load model data frame
+da <- readRDS("code/R/models/frp_model_da.rds")
+# load the stack
+stack.frp <- readRDS("code/R/models/stack_frp.rds")
+# Load the mean/sd for fixed effects (pre-scaling)
+sc_lookup <- read_csv("data/tabular/mod/var_scaling_lookup.csv")
+
+# Extract the fixed effect coefficients
+fixed_eff <- ml.frp.re.sp$summary.fixed
 # gather the standard deviation for forest type proportion
 sd_fortyp <- sc_lookup$fortyp_pct_sd
 # gather the aspen effect

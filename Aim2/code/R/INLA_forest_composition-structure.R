@@ -42,13 +42,25 @@ grid_tm <- read_csv(fp) %>%
   elev, slope, northness, eastness, tpi, # topography
   day_prop, overlap, # VIIRS aggregation
   dist_to_perim, log_fire_size, # gridcell position and fire size
-  aspen_ba_pr, aspen_tpp_pr, fire_aspen, grid_aspen,
+  aspen_ba_pr, aspen_tpp_pr, # aspen-specific metrics
+  fire_aspen, grid_aspen,
   x, y, # gridcell center coordinates
  )
 
 glimpse(grid_tm)
 
 gc()
+
+# how many fires have aspen?
+dim(grid_tm%>%filter(fire_aspen == 1)%>% distinct(Fire_ID)) 
+# how many grids have aspen?
+dim(grid_tm%>%filter(grid_aspen == 1)%>% distinct(grid_idx))[1] / 
+ length(unique(grid_tm$grid_idx)) * 100
+
+# subset to aspen fires
+grid_tm_aspen <- grid_tm %>% filter(fire_aspen == 1)
+
+# tidy the data frame
 
 
 ###################################################
@@ -131,7 +143,7 @@ grid_tm <- grid_tm %>%
   # (ba_live_pr >= qt10.ba & tpp_live_pr >= qt10.tpp),
   # Or, could just use proportion of basal area
   # remove species below 5% of BA or TPP
-  # ba_live_pr >= 0.05 | tpp_live_pr >= 0.05
+  ba_live_pr >= 0.10 | tpp_live_pr >= 0.05
  )
 
 # Tidy up !
@@ -172,11 +184,6 @@ print(length(unique(grid_tm$grid_idx))) # unique gridcells
 
 # tidy up!
 rm(gridcell_counts, fires_keep, qt, qt10)
-
-#########################################
-# final check on how many grids and fires
-length(unique(grid_tm$grid_idx))
-length(unique(grid_tm$Fire_ID))
 
 ###############################
 # check on the species counts #
@@ -276,14 +283,14 @@ rm(cor_da, cor_mat) # tidy up
 #######################################
 # species-specific correlation matrix #
 sp_cor <- da %>%
- select(grid_idx, species_gp_n, tpp_live) %>%
- spread(species_gp_n, tpp_live, fill = 0)  # Reshape to wide format
+ select(grid_idx, species_gp_n, ba_live) %>%
+ spread(species_gp_n, ba_live, fill = 0)  # Reshape to wide format
 # compute the correlation matrix
 sp_cormat <- cor(sp_cor[,-1], use = "complete.obs", method = "spearman")
 ggcorrplot(sp_cormat, method = "circle", type = "lower",
            lab = TRUE, lab_size = 3, colors = c("blue", "white", "red"))
 # save the plot.
-out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesTPP_sc.png')
+out_png <- paste0(maindir,'figures/INLA_CorrelationMatrix_SpeciesBA_sc.png')
 ggsave(out_png, dpi=500, bg = 'white')
 
 rm(sp_cor,sp_cormat) # tidy up
@@ -345,7 +352,7 @@ da %>%
 da %>%
  group_by(species_gp_n) %>%
  summarise(corr = list(
-  cor.test(ba_live, tpp_live, method = "spearman", exact = FALSE)
+  cor.test(ba_live, qmd_live, method = "spearman", exact = FALSE)
  )) %>%
  mutate(tidy_result = map(corr, broom::tidy)) %>%
  unnest(tidy_result) %>%
@@ -481,6 +488,7 @@ stack.frp <- inla.stack(
 rm(X)
 
 dim(inla.stack.A(stack.frp))
+saveRDS(stack.frp, "code/R/models/stack_frp.rds")
 
 
 #################################################################
@@ -494,10 +502,12 @@ mf.frp <- frpc ~ 1 +
  # tree-level structure X dominance
  species_gp_n:ba_live + # species live basal area
  species_gp_n:qmd_live + # species quadratic mean diameter
- species_gp_n:hdr_live + # species height-diameter ratio
- # gridcell totals
- ba_live_total + tpp_live_total + # total live BA and TPP
+ # species_gp_n:hdr_live + # species height-diameter ratio
+ # # gridcell totals
+ # ba_live_total + # total live basal area
+ # tpp_live_total + # total live trees/acre
  # other fixed effects 
+ H_ba + # gridcell diversity in basal area
  lf_canopy + # gridcell forest canopy cover percent
  erc_dv + vpd + vs + # day-of-burn fire weather
  elev + slope + northness + eastness + tpi + # topography 
@@ -625,7 +635,7 @@ tidy.effects.frp <- tibble::tibble(
    str_detect(parameter, "eastness") ~ "Eastness",
    str_detect(parameter, "slope") ~ "Slope",
    str_detect(parameter, "tpi") ~ "Topographic position",
-   str_detect(parameter, "H_tpp") ~ "Shannon diversity index (H-TPP)",
+   str_detect(parameter, "H_ba") ~ "Shannon diversity index (H-BA)",
    str_detect(parameter, "erc_dv") ~ "Energy release component\n(15-year deviation)",
    str_detect(parameter, "vpd") & !str_detect(parameter, ":") ~ "Vapor pressure deficit",
    str_detect(parameter, "dist_to_perim") ~ "Distance to fire edge",
@@ -722,6 +732,8 @@ stack.cbi <- inla.stack(
 rm(X)
 
 dim(inla.stack.A(stack.cbi))
+saveRDS(stack.frp, "code/R/models/stack_cbi.rds")
+
 
 #######################################
 # 1. Baseline model (no latent effects)
@@ -734,10 +746,12 @@ mf.cbi <- cbibc90 ~ 1 +
  # tree-level structure X dominance
  species_gp_n:ba_live + # species live basal area
  species_gp_n:qmd_live + # species quadratic mean diameter
- species_gp_n:hdr_live + # species height-diameter ratio
- # gridcell totals
- ba_live_total + tpp_live_total + # total live BA and TPP
+ # species_gp_n:hdr_live + # species height-diameter ratio
+ # # gridcell totals
+ # ba_live_total + # total live basal area
+ # tpp_live_total + # total live trees/acre
  # other fixed effects 
+ H_ba + # gridcell diversity in basal area
  lf_canopy + # gridcell forest canopy cover percent
  erc_dv + vpd + vs + # day-of-burn fire weather
  elev + slope + northness + eastness + tpi + # topography 
@@ -859,7 +873,7 @@ tidy.effects.cbi <- tibble::tibble(
    str_detect(parameter, "eastness") ~ "Eastness",
    str_detect(parameter, "slope") ~ "Slope",
    str_detect(parameter, "tpi") ~ "Topographic position",
-   str_detect(parameter, "H_tpp") ~ "Shannon diversity index (H-TPP)",
+   str_detect(parameter, "H_ba") ~ "Shannon diversity index (H-BA)",
    str_detect(parameter, "erc_dv") ~ "Energy release component\n(15-year deviation)",
    str_detect(parameter, "vpd") & !str_detect(parameter, ":") ~ "Vapor pressure deficit",
    str_detect(parameter, "dist_to_perim") ~ "Distance to fire edge",

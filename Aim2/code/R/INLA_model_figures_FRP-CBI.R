@@ -293,6 +293,6 @@ fixed_effects$effect <- factor(
 
 # Save the plot
 out_png <- paste0(maindir, 'figures/INLA_ForestComposition_FixedEffects_FRP-CBI_fixedeffects.png')
-ggsave(out_png, plot = p6, dpi = 500, width = 8, height = 6, bg = 'white')
+ggsave(out_png, plot = p3, dpi = 500, width = 8, height = 6, bg = 'white')
 
 gc()
