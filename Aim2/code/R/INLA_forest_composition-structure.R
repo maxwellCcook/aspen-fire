@@ -49,10 +49,10 @@ grid_tm <- read_csv(fp) %>%
 
 glimpse(grid_tm)
 
-gc()
 
+############################
 # how many fires have aspen?
-dim(grid_tm%>%filter(fire_aspen == 1)%>% distinct(Fire_ID)) 
+dim(grid_tm%>%filter(fire_aspen == 1)%>% distinct(Fire_ID))[1] 
 # how many grids have aspen?
 dim(grid_tm%>%filter(grid_aspen == 1)%>% distinct(grid_idx))[1] / 
  length(unique(grid_tm$grid_idx)) * 100
