@@ -8,52 +8,13 @@ library(reshape2)
 library(patchwork)
 library(forcats)
 
-# Environment variables
-maindir <- '/Users/max/Library/CloudStorage/OneDrive-Personal/mcook/aspen-fire/Aim2/'
+##-----------------------------
+### Load the cFRP gridcell data
+##-----------------------------
+# see INLA_gridcell-prep.R and python notebooks ...
+fp <- "data/tabular/mod/gridstats_model_data_c.csv"
+grid_tm <- read_csv(fp)
 
-#=========Load the Prepped gridcell data=========#
-
-# gridcell_prep.R
-fp <- paste0(maindir,"data/tabular/mod/model_data_cleaned.csv")
-grid_tm <- read_csv(fp) %>%
- # filter to aspen fires
- filter(fire_aspen == 1) %>%
- # prep some of the attributes for modeling
- mutate(
-  first_obs_date = as.factor(first_obs_date),
-  fire_aspen = as.factor(fire_aspen),
-  grid_aspen = as.factor(grid_aspen),
-  log_fire_size = log(fire_acres) # log-scale fire size
- ) %>%
- # flag re-burn gridcells
- group_by(grid_index) %>%
- mutate(
-  # Get earliest fire date for this gridcell
-  first_fire_dt = min(fire_ig_dt, na.rm = TRUE),
-  # Flag reburn: if current fire date is after earliest
-  reburn = as.factor(fire_ig_dt > first_fire_dt)
- ) %>%
- ungroup() %>%
- # filter out re-burns
- filter(
-  reburn == "FALSE"
- ) %>%
- # select the model attributes ...
- select(
-  grid_idx, grid_index, Fire_ID, fortypnm_gp, first_obs_date,
-  tpp_live_total, tpp_dead_total, tpp_live_pr,
-  ba_live_total, ba_dead_total, ba_live_pr,  
-  lf_canopy, lf_height, forest_pct, fortyp_pct,
-  erc, erc_dv, vpd, vpd_dv, vs, elev, slope, northness, tpi,
-  day_prop, overlap, dist_to_perim, log_fire_size, 
-  log_frp_csum, CBIbc_p90, CBIbc_p95, CBIbc_p99, 
-  x, y, fire_aspen, grid_aspen,
-  aspen_ba_pr, aspen_tpp_pr, aspen_ba_live,
-  aspen_tpp_live, aspen_ht_live, aspen_dia_live
- ) %>%
- # keep just one row per grid cell by predominant type
- distinct(grid_idx, fortypnm_gp, .keep_all = TRUE)
-glimpse(grid_tm)
 
 ###################################################
 # check how many grids are majority forested, etc #
@@ -62,66 +23,39 @@ print(length(unique(grid_tm$grid_idx))) # unique gridcells
 # Check how many grids are > 50% forested
 print(paste0(
  "Percent forested gridcells (>50% gridcell area): ",
- round(dim(grid_tm %>% filter(forest_pct > 0.50) %>% distinct(grid_idx))[1]/
+ round(dim(grid_tm %>% filter(forest_prop > 0.50) %>% distinct(grid_idx))[1]/
         dim(grid_tm %>% distinct(grid_idx))[1], 3) * 100, "%"
 ))
-# # retain predominantly forested gridcells ...
-# grid_tm <- grid_tm %>%
-#  filter(forest_pct >= 0.50)
 
-##########################################
-# filter fires with not enough gridcells #
-# should have at least 10 (?)
-# check on the grid cell counts
-gridcell_counts <- grid_tm %>%
- distinct(Fire_ID, grid_idx) %>% # keep only distinct rows
- group_by(Fire_ID) %>%
- summarise(n_gridcells = n())
-# check the distribution
-summary(gridcell_counts$n_gridcells)
-# calculate the quantile distribution
-(qt <- tibble::enframe(
- round(quantile(gridcell_counts$n_gridcells, probs = seq(.1, .9, by = .1))),
- name = "qt", value = "val"
-))
-(qt10 = qt[1,]$val) # 10%
-# # filter fires below the 10th percentile
-# grid_tm <- grid_tm %>%
-#  group_by(Fire_ID) %>%
-#  filter(n() >= qt10) %>%
-#  ungroup()
-# tidy up!
-rm(gridcell_counts,qt)
+#######################
+# Filter to aspen fires
+aspen_da <- grid_tm %>% 
+ filter(fire_aspen == 1)
 
-##################################
 # check on the aspen proportions #
-summary(grid_tm$aspen_ba_pr)
-summary(grid_tm$aspen_tpp_pr)
+summary(aspen_da$aspen_ba_pr)
+summary(aspen_da$aspen_tpa_pr)
 
-################################
 # check how many grids and fires
-length(unique(grid_tm$grid_idx))
-length(unique(grid_tm$Fire_ID))
-
-# relevel the grid_aspen factor
-grid_tm$grid_aspen = fct_relevel(grid_tm$grid_aspen, c("1","0"))
-levels(grid_tm$grid_aspen)
+length(unique(aspen_da$grid_idx))
+length(unique(aspen_da$fire_id))
 
 
 #===========MODEL SETUP==============#
 
 # prep the model data frame
 # center and scale fixed effects
-da <- grid_tm %>%
+aspen_da <- aspen_da %>%
  mutate(
   # force aspen to be the baseline factor
   fortypnm_gp = fct_relevel(fortypnm_gp, "quaking_aspen"),
+  fire_aspen = fct_relevel(factor(fire_aspen), "1"),
+  grid_aspen = fct_relevel(factor(grid_aspen), "1"),
   # center/scale metrics / fixed effects
   across(
-   c(aspen_ba_live, aspen_tpp_live, aspen_ht_live, # gridcell aspen metrics
-     aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, # gridcell aspen metrics
-     forest_pct, fortyp_pct, lf_canopy, lf_height, # gridcell forest characteristics
-     ba_dead_total, ba_live_total, tpp_live_total, tpp_dead_total, # gridcell forest characteristics
+   c(aspen_ba_pr, aspen_tpa_pr, 
+     aspen_ba, aspen_tpa, aspen_hdr, aspen_qmd,  # gridcell aspen metrics
+     forest_prop, fortypcd_pct, cc, ch, # gridcell forest characteristics
      erc, erc_dv, vpd, vs, #climate
      elev, slope, northness, tpi, # topography
      day_prop, overlap, # VIIRS detection characteristics
@@ -135,7 +69,7 @@ gc()
 
 # check the factor levels
 # make sure aspen is first
-levels(da$fortypnm_gp)
+levels(aspen_da$fortypnm_gp)
 
 
 
@@ -169,13 +103,11 @@ pr.pc_prec <- list(
 # 1. Baseline model (no random or latent effects)
 
 # setup the model formula
-mf.frp <- log_frp_csum ~ 1 +
+mf.frp <- cfrp ~ 1 +
  fortypnm_gp:aspen_ba_pr + 
  vpd:fortypnm_gp:aspen_ba_pr +
- fortyp_pct + # forest type percent cover
- lf_canopy + # gridcell forest canopy percent
- tpp_dead_total + # proportion live/dead basal area
- tpp_live_total + # total trees/pixel
+ fortypcd_pct + # forest type percent cover
+ cc + # gridcell forest canopy percent
  erc_dv + vpd + vs + # day-of-burn climate/weather
  elev + slope + northness + tpi + # topography 
  overlap + # gridcell VIIRS overlap (cumulative)
@@ -183,11 +115,11 @@ mf.frp <- log_frp_csum ~ 1 +
  dist_to_perim + # gridcell distance to perimeter
  grid_aspen + # gridcell aspen presence
  # random effects
- f(Fire_ID, model = "iid", hyper = pr.pc_prec)
+ f(fire_id, model = "iid", hyper = pr.pc_prec)
 
 # fit the model
 ml.frp <- inla(
- mf.frp, data = da,
+ mf.frp, data = aspen_da,
  family = "gaussian",
  control.predictor = list(compute=T),
  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
@@ -203,8 +135,8 @@ mean(ml.frp$cpo$cpo, na.rm = TRUE)
 # Spatial SPDE model #
 
 # extracting spatial coordinates for grid centroids
-grid_sf <- da %>%
- arrange(grid_index) %>%
+grid_sf <- aspen_da %>%
+ arrange(grid_idx) %>%
  st_as_sf(., coords = c("x", "y"), crs = 4326)
 # extract coordinates
 coords <- grid_sf %>% st_coordinates(.)
@@ -246,19 +178,17 @@ field.idx <- inla.spde.make.index(
 str(field.idx)
 
 # Extract the predictor variables
-X <- da %>% 
- select(Fire_ID, first_obs_date, grid_index,
-        aspen_ba_live, aspen_tpp_live, aspen_ht_live, 
-        aspen_dia_live, aspen_ba_pr, aspen_tpp_pr, 
-        fortypnm_gp, fortyp_pct, ba_live_pr,    
-        lf_canopy, ba_dead_total, ba_live_total,
-        tpp_dead_total, tpp_live_total,
+X <- aspen_da %>% 
+ select(fire_id, first_obs_date, grid_idx,
+        aspen_ba_pr, aspen_tpa_pr, 
+        aspen_ba, aspen_tpa, aspen_hdr, aspen_qmd, 
+        fortypnm_gp, fortypcd_pct, cc, 
         erc_dv, vpd, vs, elev, slope, northness, tpi,
         grid_aspen, day_prop, overlap, dist_to_perim)
 
 # Create the INLA data stack
 stack.frp <- inla.stack(
- data = list(log_frp_csum = da$log_frp_csum),
+ data = list(cfrp = aspen_da$cfrp),
  A = list(A, 1),  
  tag = 'est',
  effects = list(
@@ -269,6 +199,7 @@ stack.frp <- inla.stack(
 dim(inla.stack.A(stack.frp))
 rm(grid_sf, X)
 gc()
+
 
 ##########################
 # update the model formula
@@ -304,7 +235,7 @@ exp.frp <- ml.frp.re.sp$summary.fixed %>%
   upper_ci = exp(`0.975quant`) - 1   # 97.5% CI bound
  )
 # save this table
-write_csv(exp.frp, paste0(maindir,"data/tabular/mod/results/INLA_exp_FRP_aspenEffect.csv"))
+write_csv(exp.frp, "data/tabular/mod/results/INLA_exp_FRP_aspenEffect.csv")
 # check results
 exp.frp%>%select(parameter,exp_mean,lower_ci,upper_ci)
 

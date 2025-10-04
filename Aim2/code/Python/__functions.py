@@ -4,27 +4,25 @@ Python library imports
 maxwell.cook@colorado.edu
 """
 
-import gc, time, os, sys, glob
+import gc, time, os, glob
 import shutil
 import numpy as np
 import pandas as pd
 import rioxarray as rxr
-import rasterio as rio
 import xarray as xr
 import matplotlib.pyplot as plt
 import pyproj
 import requests
 import tempfile
-import geopandas as gpd
-import seaborn as sns
 
+from rasterio.transform import rowcol
+from scipy.ndimage import label
+from skimage.measure import regionprops
 from rasterio.features import rasterize
 from rasterio.windows import from_bounds
 from rasterio.enums import Resampling
 from geocube.api.core import make_geocube
 from tqdm.notebook import tqdm
-from itertools import combinations
-from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from shapely.geometry import box
@@ -124,6 +122,15 @@ def get_coords(geom, buffer, crs='EPSG:4326'):
     return coords, extent
 
 
+def dom_spps(df, N=3, col='pct_cover', label_col='EVT_NAME', prefix='dom_'):
+    """ Returns the top N species names from EVT or other field """
+    top_n = df.nlargest(N, col)
+    return pd.Series({
+        f'{prefix}{i + 1}': top_n.iloc[i][label_col] if i < len(top_n) else None
+        for i in range(N)
+    })
+
+
 def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='categorical'):
     """
     Function to compute band statistics for geometries and a single raster band.
@@ -211,6 +218,64 @@ def compute_band_stats(geoms, image_da, id_col, attr=None, stats=None, ztype='ca
             stats_df = stats_df[cols_to_keep]
 
             return stats_df
+
+
+def compute_patch_metrics(arr, pixel_res=(30, 30)):
+    """
+    Compute patch metrics from a binary 2D array using connected component labeling.
+
+    Parameters:
+        arr (np.array): 2D binary mask (1 = aspen, 0 = non-aspen)
+        pixel_res (tuple): (x, y) pixel resolution in meters
+
+    Returns:
+        dict or None — all areas in hectares
+    """
+    try:
+        labeled, num_patches = label(arr == 1)
+        if num_patches == 0:
+            return None
+
+        props = regionprops(labeled)
+        pixel_area_ha = (pixel_res[0] * pixel_res[1]) / 10_000  # m² to ha
+        patch_areas = [p.area * pixel_area_ha for p in props]
+
+        return {
+            'n_patch': num_patches,
+            'mean_patch': np.mean(patch_areas),
+            'large_patch': np.max(patch_areas),
+            'total_aspen_ha': np.sum(patch_areas)
+        }
+
+    except Exception as e:
+        print(f"Patch metric error: {e}")
+        return None
+
+
+def geometry_to_window(geom, transform, shape, buffer_pixels=0):
+    """
+    Convert a grid cell geometry to raster window indices.
+
+    Parameters:
+        geom (shapely.geometry.Polygon): Grid cell geometry
+        transform (Affine): Raster transform (from .rio.transform())
+        shape (tuple): (height, width) of the raster
+        buffer_pixels (int): optional padding to add around window
+
+    Returns:
+        (row_start, row_stop, col_start, col_stop)
+    """
+    bounds = geom.bounds  # (minx, miny, maxx, maxy)
+    row_start, col_start = rowcol(transform, bounds[0], bounds[3])  # upper-left
+    row_stop, col_stop   = rowcol(transform, bounds[2], bounds[1])  # lower-right
+
+    # Add optional buffer
+    row_start = max(0, row_start - buffer_pixels)
+    col_start = max(0, col_start - buffer_pixels)
+    row_stop = min(shape[0], row_stop + buffer_pixels)
+    col_stop = min(shape[1], col_stop + buffer_pixels)
+
+    return row_start, row_stop, col_start, col_stop
 
 
 def create_bounds(gdf, buffer=None, method='bounds'):
